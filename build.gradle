@@ -23,9 +23,30 @@ javafx {
 
 application {
     mainClass = 'com.antlab.rigcontrol.App'
+    applicationName = 'System Thinker'
 }
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
 
+tasks.register('jpackageApp', Exec) {
+    dependsOn tasks.jar
+    def javaHome = System.getenv("JAVA_HOME") ?: ""
+    def javaBin = javaHome ? "${javaHome}/bin/jpackage" : "jpackage"
+    def inputDir = file("${buildDir}/libs")
+    def appName = "System Thinker"
+    def mainJar = tasks.jar.archiveFile.get().asFile.name
+    def modulePath = configurations.runtimeClasspath.asPath
+    def addModules = "javafx.controls,javafx.fxml,java.logging,java.prefs,java.desktop"
+    commandLine javaBin,
+            "--type", "dmg",
+            "--input", inputDir.absolutePath,
+            "--dest", file("${buildDir}/jpackage").absolutePath,
+            "--name", appName,
+            "--main-jar", mainJar,
+            "--main-class", application.mainClass.get(),
+            "--icon", file("assets/system-thinker.icns").absolutePath,
+            "--module-path", modulePath,
+            "--add-modules", addModules
+}

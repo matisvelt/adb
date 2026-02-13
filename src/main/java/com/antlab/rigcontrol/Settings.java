@@ -1,5 +1,9 @@
 package com.antlab.rigcontrol;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.prefs.Preferences;
 
 public class Settings {
@@ -22,6 +26,44 @@ public class Settings {
 
     public String getAdbPath() {
         return prefs.get(KEY_ADB_PATH, "adb");
+    }
+
+    public synchronized String getResolvedAdbPath() {
+        String configured = getAdbPath();
+        if (configured != null && !configured.isBlank() && !"adb".equalsIgnoreCase(configured.trim())) {
+            return configured.trim();
+        }
+
+        List<String> candidates = new ArrayList<>();
+        String envHome = System.getenv("ANDROID_HOME");
+        String envSdk = System.getenv("ANDROID_SDK_ROOT");
+        if (envHome != null && !envHome.isBlank()) {
+            candidates.add(Path.of(envHome, "platform-tools", "adb").toString());
+        }
+        if (envSdk != null && !envSdk.isBlank()) {
+            candidates.add(Path.of(envSdk, "platform-tools", "adb").toString());
+        }
+
+        String userHome = System.getProperty("user.home");
+        if (userHome != null && !userHome.isBlank()) {
+            candidates.add(Path.of(userHome, "Library", "Android", "sdk", "platform-tools", "adb").toString());
+            candidates.add(Path.of(userHome, "Android", "Sdk", "platform-tools", "adb").toString());
+        }
+
+        candidates.add("/opt/homebrew/bin/adb");
+        candidates.add("/usr/local/bin/adb");
+
+        for (String candidate : candidates) {
+            try {
+                if (candidate != null && Files.isExecutable(Path.of(candidate))) {
+                    setAdbPath(candidate);
+                    return candidate;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        return "adb";
     }
 
     public void setAdbPath(String path) {

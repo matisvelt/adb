@@ -32,6 +32,7 @@ public class App extends Application {
 
     @Override
     public void start(Stage stage) {
+        Platform.setImplicitExit(false);
         Settings settings = new Settings();
         logService = new LogService(Path.of(System.getProperty("user.home"), ".rigcontrol", "logs"));
         ADBService adbService = new ADBService(settings, logService.getLogger());
@@ -45,7 +46,7 @@ public class App extends Application {
         root.setPadding(new Insets(12));
         root.getStyleClass().add("root");
 
-        HBox topBar = new HBox(10);
+        VBox topBar = new VBox(6);
         topBar.getStyleClass().add("topbar");
         Button rescanButton = new Button("Rescan");
         Button pingAllButton = new Button("Ping all");
@@ -57,7 +58,9 @@ public class App extends Application {
         Button exportSnapshotButton = new Button("Export Snapshot");
         Button restartAdbButton = new Button("Restart ADB");
         Button copyButton = new Button("Copy CSV");
+        Button quitButton = new Button("Quit");
         CheckBox hideDisconnected = new CheckBox("Hide disconnected");
+        CheckBox hideEmulators = new CheckBox("Hide emulators");
         CheckBox pausePolling = new CheckBox("Pause");
         rescanButton.getStyleClass().add("secondary-button");
         pingAllButton.getStyleClass().add("primary-button");
@@ -68,6 +71,7 @@ public class App extends Application {
         importExpectedButton.getStyleClass().add("secondary-button");
         exportSnapshotButton.getStyleClass().add("secondary-button");
         restartAdbButton.getStyleClass().add("secondary-button");
+        quitButton.getStyleClass().add("secondary-button");
         copyButton.getStyleClass().add("secondary-button");
         Label deviceCountLabel = new Label();
         deviceCountLabel.getStyleClass().add("chip-primary");
@@ -88,22 +92,85 @@ public class App extends Application {
         legendButton.setOnAction(e -> showLegend(stage));
         helpButton.setOnAction(e -> showReconnectChecklist(stage));
         importExpectedButton.setOnAction(e -> importExpected(stage));
-        exportSnapshotButton.setOnAction(e -> exportSnapshot(stage, filtered));
         restartAdbButton.setOnAction(e -> deviceManager.restartAdb());
         pausePolling.selectedProperty().addListener((obs, oldVal, newVal) -> deviceManager.setPaused(newVal));
-
-        Region topSpacer = new Region();
-        HBox.setHgrow(topSpacer, Priority.ALWAYS);
-        topBar.getChildren().addAll(
-                rescanButton, pingAllButton, demoButton, copyButton, settingsButton, legendButton, helpButton,
-                importExpectedButton, exportSnapshotButton, restartAdbButton,
-                topSpacer, deviceCountLabel, adbHealthLabel, adbPathLabel, scanDurationLabel, hideDisconnected, pausePolling
-        );
-        root.setTop(topBar);
+        final boolean[] allowExit = {false};
+        quitButton.setOnAction(e -> requestExit(stage, allowExit));
 
         FilteredList<DeviceInfo> filtered = new FilteredList<>(deviceManager.getDevices(), d -> true);
+
+        MenuBar menuBar = new MenuBar();
+        Menu fileMenu = new Menu("File");
+        MenuItem exportItem = new MenuItem("Export Snapshot...");
+        MenuItem quitItem = new MenuItem("Quit");
+        quitItem.setOnAction(e -> requestExit(stage, allowExit));
+        fileMenu.getItems().addAll(exportItem, new SeparatorMenuItem(), quitItem);
+
+        Menu viewMenu = new Menu("View");
+        CheckMenuItem hideDisconnectedItem = new CheckMenuItem("Hide disconnected");
+        hideDisconnectedItem.selectedProperty().bindBidirectional(hideDisconnected.selectedProperty());
+        CheckMenuItem hideEmulatorsItem = new CheckMenuItem("Hide emulators");
+        hideEmulatorsItem.selectedProperty().bindBidirectional(hideEmulators.selectedProperty());
+        CheckMenuItem pausePollingItem = new CheckMenuItem("Pause polling");
+        pausePollingItem.selectedProperty().bindBidirectional(pausePolling.selectedProperty());
+        viewMenu.getItems().addAll(hideDisconnectedItem, hideEmulatorsItem, pausePollingItem);
+
+        Menu toolsMenu = new Menu("Tools");
+        MenuItem rescanItem = new MenuItem("Rescan");
+        rescanItem.setOnAction(e -> deviceManager.rescanNow());
+        MenuItem pingAllItem = new MenuItem("Ping all");
+        pingAllItem.setOnAction(e -> deviceManager.pingAll());
+        MenuItem restartAdbItem = new MenuItem("Restart ADB");
+        restartAdbItem.setOnAction(e -> deviceManager.restartAdb());
+        MenuItem demoItem = new MenuItem("Demo data");
+        demoItem.setOnAction(e -> enableDemoData(settings));
+        MenuItem importExpectedItem = new MenuItem("Import expected list...");
+        importExpectedItem.setOnAction(e -> importExpected(stage));
+        toolsMenu.getItems().addAll(rescanItem, pingAllItem, restartAdbItem, new SeparatorMenuItem(), demoItem, importExpectedItem);
+
+        Menu helpMenu = new Menu("Help");
+        MenuItem legendItem = new MenuItem("Device legend");
+        legendItem.setOnAction(e -> showLegend(stage));
+        MenuItem checklistItem = new MenuItem("Reconnect checklist");
+        checklistItem.setOnAction(e -> showReconnectChecklist(stage));
+        helpMenu.getItems().addAll(legendItem, checklistItem);
+
+        menuBar.getMenus().addAll(fileMenu, viewMenu, toolsMenu, helpMenu);
+
+        HBox actionsLeft = new HBox(8,
+                rescanButton, pingAllButton, pausePolling, restartAdbButton, settingsButton, quitButton
+        );
+        actionsLeft.getStyleClass().add("toolbar-group");
+
+        HBox dataLeft = new HBox(8,
+                demoButton, importExpectedButton, exportSnapshotButton, copyButton
+        );
+        dataLeft.getStyleClass().add("toolbar-group");
+
+        HBox filtersLeft = new HBox(8, hideDisconnected, hideEmulators);
+        filtersLeft.getStyleClass().add("toolbar-group");
+
+        VBox leftRibbon = new VBox(6, actionsLeft, dataLeft, filtersLeft);
+        leftRibbon.getStyleClass().add("ribbon");
+
+        HBox statusRight = new HBox(8, deviceCountLabel, adbHealthLabel, adbPathLabel, scanDurationLabel);
+        statusRight.getStyleClass().add("toolbar-group");
+        statusRight.setAlignment(Pos.CENTER_RIGHT);
+
+        BorderPane ribbonRow = new BorderPane();
+        ribbonRow.setLeft(leftRibbon);
+        ribbonRow.setRight(statusRight);
+        ribbonRow.setPadding(new Insets(6, 0, 0, 0));
+
+        topBar.getChildren().addAll(menuBar, ribbonRow);
+        root.setTop(topBar);
+
+        exportItem.setOnAction(e -> exportSnapshot(stage, filtered));
         hideDisconnected.selectedProperty().addListener((obs, oldVal, newVal) -> {
-            filtered.setPredicate(d -> !newVal || !"disconnected".equalsIgnoreCase(d.getAdbState()));
+            filtered.setPredicate(d -> filterDevice(d, hideDisconnected.isSelected(), hideEmulators.isSelected()));
+        });
+        hideEmulators.selectedProperty().addListener((obs, oldVal, newVal) -> {
+            filtered.setPredicate(d -> filterDevice(d, hideDisconnected.isSelected(), hideEmulators.isSelected()));
         });
 
         TableView<DeviceInfo> table = new TableView<>(filtered);
@@ -112,6 +179,12 @@ public class App extends Application {
 
         TableColumn<DeviceInfo, String> serialCol = new TableColumn<>("Serial");
         serialCol.setCellValueFactory(data -> data.getValue().serialProperty());
+
+        TableColumn<DeviceInfo, String> indexCol = new TableColumn<>("#");
+        indexCol.setCellValueFactory(cell -> new javafx.beans.property.SimpleStringProperty(
+                String.valueOf(table.getItems().indexOf(cell.getValue()) + 1)
+        ));
+        indexCol.setPrefWidth(50);
 
         TableColumn<DeviceInfo, String> stateCol = new TableColumn<>("ADB State");
         stateCol.setCellValueFactory(data -> data.getValue().adbStateProperty());
@@ -139,7 +212,7 @@ public class App extends Application {
         tagCol.setCellFactory(TextFieldTableCell.forTableColumn());
         tagCol.setOnEditCommit(e -> e.getRowValue().setTag(e.getNewValue()));
 
-        table.getColumns().addAll(serialCol, stateCol, modelCol, versionCol, lastSeenCol, pingCol, lastPingCol, expectedCol, tagCol);
+        table.getColumns().addAll(indexCol, serialCol, stateCol, modelCol, versionCol, lastSeenCol, pingCol, lastPingCol, expectedCol, tagCol);
         VBox tableCard = new VBox(table);
         tableCard.getStyleClass().add("card");
         TabPane centerTabs = new TabPane();
@@ -199,6 +272,7 @@ public class App extends Application {
         updateAdbPathLabel(adbPathLabel, settings);
 
         copyButton.setOnAction(e -> copyCsv(filtered));
+        exportSnapshotButton.setOnAction(e -> exportSnapshot(stage, filtered));
 
         Timeline telemetryTimer = new Timeline(new KeyFrame(javafx.util.Duration.seconds(1), e -> {
             telemetryLabel.setText(buildTelemetryText(deviceManager));
@@ -210,9 +284,16 @@ public class App extends Application {
 
         Scene scene = new Scene(root, settings.getWindowWidth(), settings.getWindowHeight());
         scene.getStylesheets().add(getClass().getResource("/app.css").toExternalForm());
-        stage.setTitle("RigControl v0.1");
+        stage.setTitle("System Thinker v0.1");
         stage.setScene(scene);
-        stage.setOnCloseRequest(event -> logService.getLogger().info("Stage close requested"));
+        stage.setOnCloseRequest(event -> {
+            if (!allowExit[0]) {
+                logService.getLogger().info("Close requested (blocked). Use Quit button.");
+                event.consume();
+                return;
+            }
+            logService.getLogger().info("Stage close requested");
+        });
         stage.setOnHidden(event -> logService.getLogger().info("Stage hidden"));
         stage.widthProperty().addListener((obs, oldVal, newVal) -> settings.setWindowWidth(newVal.doubleValue()));
         stage.heightProperty().addListener((obs, oldVal, newVal) -> settings.setWindowHeight(newVal.doubleValue()));
@@ -247,8 +328,14 @@ public class App extends Application {
         }
     }
 
+    private void requestExit(Stage stage, boolean[] allowExit) {
+        allowExit[0] = true;
+        stage.close();
+        Platform.exit();
+    }
+
     private void updateAdbPathLabel(Label label, Settings settings) {
-        String path = settings.getAdbPath();
+        String path = settings.getResolvedAdbPath();
         String text;
         String style;
         if (path == null || path.isBlank() || "adb".equalsIgnoreCase(path.trim())) {
@@ -374,6 +461,16 @@ public class App extends Application {
             return "\"" + v + "\"";
         }
         return v;
+    }
+
+    private boolean filterDevice(DeviceInfo device, boolean hideDisconnected, boolean hideEmulators) {
+        if (hideDisconnected && "disconnected".equalsIgnoreCase(device.getAdbState())) {
+            return false;
+        }
+        if (hideEmulators && device.getSerial() != null && device.getSerial().startsWith("emulator-")) {
+            return false;
+        }
+        return true;
     }
 
     private void importExpected(Stage owner) {

@@ -77,3 +77,29 @@ This document defines the non‑negotiable rules for this codebase. Use it as th
 ## 15) Rig Safety Constraints
 - No device reboots or destructive operations without explicit operator action.
 - Recovery routines must default to non‑destructive steps first.
+
+## 16) Permission Preflight (Operational Rule)
+- Before starting any new phase or multi‑step task, enumerate all commands likely to require elevated permissions.
+- Request approvals in a single batch up front instead of per‑command prompts.
+- Avoid unexpected privilege requests mid‑task unless absolutely necessary.
+
+## 17) Pre‑Approved Command Prefixes (Current)
+These are the prefixes already approved during this project. Ask for these upfront at the start of a session to avoid repeated prompts.
+
+- `gradle run`
+- `gradle jpackageApp`
+- `git -C /Users/mac/Desktop/ADB connector add`
+- `git -C /Users/mac/Desktop/ADB connector commit`
+- `git -C /Users/mac/Desktop/ADB connector push`
+- `git -C /Users/mac/Desktop/ADB connector remote`
+- `git -C /Users/mac/Desktop/ADB connector branch`
+- `mkdir -p /Users/mac/.gradle/native`
+- `brew install gradle`
+- `brew install openjdk@17`
+- `brew install icnsutils`
+- `qlmanage -t`
+- `sips -s format icns`
+- `python3 -m venv /tmp/icnsenv`
+- `hdiutil attach`
+- `hdiutil detach`
+- `cp -R /Volumes/System Thinker/System Thinker.app /Applications/`

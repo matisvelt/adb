@@ -26,7 +26,7 @@ public class ADBService {
 
     public ExecResult runAdb(List<String> args, Duration timeout) {
         List<String> command = new ArrayList<>();
-        command.add(settings.getAdbPath());
+        command.add(settings.getResolvedAdbPath());
         command.addAll(args);
 
         ProcessBuilder builder = new ProcessBuilder(command);
