@@ -16,6 +16,16 @@ repositories {
     mavenCentral()
 }
 
+def gitHash = "unknown"
+try {
+    def proc = ["git", "rev-parse", "--short", "HEAD"].execute(null, rootDir)
+    proc.waitFor()
+    if (proc.exitValue() == 0) {
+        gitHash = proc.in.text.trim()
+    }
+} catch (Exception ignored) {
+}
+
 javafx {
     version = '21.0.2'
     modules = [ 'javafx.controls', 'javafx.fxml' ]
@@ -28,6 +38,24 @@ application {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
+}
+
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.10.2'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+jar {
+    manifest {
+        attributes(
+                'Implementation-Title': 'System Thinker',
+                'Implementation-Version': gitHash
+        )
+    }
 }
 
 tasks.register('jpackageApp', Exec) {

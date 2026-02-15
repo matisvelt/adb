@@ -10,6 +10,13 @@ RigControl is a JavaFX desktop app for monitoring headless Android compute board
 - Exposes ADB health, scan duration, and telemetry in the UI.
 - Logs to a local file and shows a live console.
 
+## Intel Analytics (Noise + Urgency)
+- Local Monte Carlo simulator for decision quality under noisy reporting.
+- Runs deterministic batches with configurable sources, urgency, and costs.
+- Sweep experiments for specificity vs sensitivity degradation (H1/H2).
+- Exports experiment artifacts to `~/SystemThinker/experiments/YYYY-MM-DD/`.
+- Dataset generation to `~/SystemThinker/datasets/` for ML pipelines.
+
 ## Project Structure
 - `src/main/java/com/antlab/rigcontrol/App.java`
   - JavaFX entry point. Builds the UI and binds to model properties.
@@ -86,4 +93,3 @@ JAVA_HOME="/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home" gradl
 ## Notes
 - Unauthorized devices require ADB key approval on the device.
 - Demo mode avoids any real ADB usage.
-

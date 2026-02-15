@@ -32,6 +32,21 @@
     -fx-padding: 6 0 0 0;
 }
 
+.ribbon-group {
+    -fx-padding: 6 10 6 10;
+    -fx-background-color: #0f141b;
+    -fx-border-color: #20262e;
+    -fx-border-radius: 10;
+    -fx-background-radius: 10;
+}
+
+.ribbon-title {
+    -fx-text-fill: #8b98a7;
+    -fx-font-size: 10px;
+    -fx-font-weight: bold;
+    -fx-padding: 4 2 0 2;
+}
+
 .toolbar-group {
     -fx-padding: 2 6 2 6;
     -fx-background-color: #0f141b;
@@ -48,6 +63,10 @@
     -fx-font-weight: bold;
 }
 
+.primary-button:hover {
+    -fx-background-color: #37f7b2;
+}
+
 .secondary-button {
     -fx-background-color: #111821;
     -fx-text-fill: #e6ebf0;
@@ -56,6 +75,15 @@
     -fx-border-color: #27303a;
     -fx-border-radius: 8;
     -fx-border-width: 1;
+}
+
+.secondary-button:hover {
+    -fx-background-color: #16212b;
+}
+
+.button:pressed {
+    -fx-scale-x: 0.98;
+    -fx-scale-y: 0.98;
 }
 
 .card {
@@ -144,6 +172,40 @@
     -fx-text-fill: #21f6a5;
 }
 
+.scroll-pane {
+    -fx-background: transparent;
+    -fx-background-color: transparent;
+}
+
+.text-area {
+    -fx-control-inner-background: #0f141b;
+    -fx-text-fill: #e6ebf0;
+    -fx-background-radius: 8;
+    -fx-border-color: #27303a;
+    -fx-border-radius: 8;
+    -fx-border-width: 1;
+}
+
+.chart {
+    -fx-background-color: transparent;
+}
+
+.chart-plot-background {
+    -fx-background-color: #0f141b;
+}
+
+.chart-vertical-grid-lines, .chart-horizontal-grid-lines {
+    -fx-stroke: #1b222b;
+}
+
+.axis {
+    -fx-tick-label-fill: #8b98a7;
+}
+
+.axis-label {
+    -fx-text-fill: #8b98a7;
+}
+
 .chip-primary {
     -fx-background-color: #21f6a5;
     -fx-text-fill: #0b0f14;
@@ -174,6 +236,34 @@
     -fx-padding: 4 10 4 10;
     -fx-background-radius: 999;
     -fx-font-weight: bold;
+}
+
+.info-button {
+    -fx-background-color: #0b0f14;
+    -fx-text-fill: #21f6a5;
+    -fx-background-radius: 999;
+    -fx-border-color: #21f6a5;
+    -fx-border-radius: 999;
+    -fx-border-width: 1;
+    -fx-padding: 0 6 0 6;
+    -fx-font-size: 11px;
+    -fx-min-width: 18px;
+    -fx-min-height: 18px;
+}
+
+.info-button:hover {
+    -fx-background-color: #111821;
+}
+
+.tooltip {
+    -fx-background-color: #0f141b;
+    -fx-text-fill: #e6ebf0;
+    -fx-background-radius: 8;
+    -fx-padding: 6 10 6 10;
+    -fx-border-color: #27303a;
+    -fx-border-radius: 8;
+    -fx-border-width: 1;
+    -fx-font-size: 11px;
 }
 
 .check-box {
