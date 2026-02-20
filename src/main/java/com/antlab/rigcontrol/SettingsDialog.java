@@ -12,7 +12,7 @@ public class SettingsDialog {
         Stage dialog = new Stage();
         dialog.initOwner(owner);
         dialog.initModality(Modality.APPLICATION_MODAL);
-        dialog.setTitle("Settings");
+        dialog.setTitle("ADB Settings");
 
         TextField adbPathField = new TextField(settings.getAdbPath());
         TextField pollField = new TextField(String.valueOf(settings.getPollIntervalSeconds()));
@@ -24,10 +24,6 @@ public class SettingsDialog {
         TextField backoffMaxField = new TextField(String.valueOf(settings.getPingBackoffMaxSeconds()));
         TextField rateLimitField = new TextField(String.valueOf(settings.getAdbRateLimitPerInterval()));
         TextField rateIntervalField = new TextField(String.valueOf(settings.getAdbRateIntervalSeconds()));
-        CheckBox simulationCheck = new CheckBox("Use simulation file");
-        simulationCheck.setSelected(settings.isSimulationEnabled());
-        TextField simulationFileField = new TextField(settings.getSimulationFile());
-
         GridPane grid = new GridPane();
         grid.setHgap(8);
         grid.setVgap(10);
@@ -41,7 +37,6 @@ public class SettingsDialog {
         grid.addRow(7, new Label("Backoff max (s)"), backoffMaxField);
         grid.addRow(8, new Label("ADB rate limit (per interval)"), rateLimitField);
         grid.addRow(9, new Label("ADB rate interval (s)"), rateIntervalField);
-        grid.addRow(10, simulationCheck, simulationFileField);
 
         Button saveButton = new Button("Save");
         Button cancelButton = new Button("Cancel");
@@ -61,15 +56,13 @@ public class SettingsDialog {
             settings.setPingBackoffMaxSeconds(parseInt(backoffMaxField.getText(), settings.getPingBackoffMaxSeconds()));
             settings.setAdbRateLimitPerInterval(parseInt(rateLimitField.getText(), settings.getAdbRateLimitPerInterval()));
             settings.setAdbRateIntervalSeconds(parseInt(rateIntervalField.getText(), settings.getAdbRateIntervalSeconds()));
-            settings.setSimulationEnabled(simulationCheck.isSelected());
-            settings.setSimulationFile(simulationFileField.getText());
             deviceManager.applySettings();
             dialog.close();
         });
 
         cancelButton.setOnAction(e -> dialog.close());
 
-        Scene scene = new Scene(root, 640, 420);
+        Scene scene = new Scene(root, 520, 360);
         dialog.setScene(scene);
         dialog.showAndWait();
     }

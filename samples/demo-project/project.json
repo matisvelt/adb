@@ -1,0 +1,23 @@
+{
+  "name" : "Demo Project",
+  "sourceRoot" : "/path/to/source",
+  "destinationRoot" : "/path/to/dest",
+  "strictHash" : false,
+  "confidenceThreshold" : 0.7,
+  "batchSize" : 16,
+  "maxInFlight" : 32,
+  "appendDateFolders" : true,
+  "previewPolicy" : {
+    "maxLongEdgePx" : 1536,
+    "format" : "WEBP",
+    "quality" : 85,
+    "keepPreviews" : false
+  },
+  "rules" : [
+    {"id":"rule-1","enabled":true,"condition":"label == DOCUMENT_INVOICE","destination":"Work/Invoices","notes":"Invoices"},
+    {"id":"rule-2","enabled":true,"condition":"label == DOCUMENT_OTHER || hasTextLikelihood > 0.7","destination":"Work/Documents","notes":"Documents"},
+    {"id":"rule-3","enabled":true,"condition":"label == SCREENSHOT","destination":"Work/Screenshots","notes":"Screenshots"},
+    {"id":"rule-4","enabled":true,"condition":"label startsWith PHOTO && facesCount >= 1","destination":"Private/Family/People","notes":"People photos"},
+    {"id":"rule-5","enabled":true,"condition":"label startsWith PHOTO && facesCount == 0","destination":"Private/Photos/Other","notes":"Other photos"}
+  ]
+}

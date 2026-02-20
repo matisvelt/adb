@@ -11,8 +11,6 @@ public class Settings {
     private static final String KEY_POLL_INTERVAL = "pollIntervalSeconds";
     private static final String KEY_PING_INTERVAL = "pingIntervalSeconds";
     private static final String KEY_ADB_TIMEOUT = "adbTimeoutSeconds";
-    private static final String KEY_SIM_ENABLED = "simulationEnabled";
-    private static final String KEY_SIM_FILE = "simulationFile";
     private static final String KEY_PING_MAX_CONCURRENCY = "pingMaxConcurrency";
     private static final String KEY_PING_BACKOFF = "pingFailureBackoffSeconds";
     private static final String KEY_ADB_RATE_LIMIT = "adbRateLimitPerInterval";
@@ -21,6 +19,7 @@ public class Settings {
     private static final String KEY_BACKOFF_STEP = "pingBackoffStepSeconds";
     private static final String KEY_LAST_WIDTH = "windowWidth";
     private static final String KEY_LAST_HEIGHT = "windowHeight";
+    private static final String KEY_LAST_PROJECT = "lastProjectPath";
 
     private final Preferences prefs = Preferences.userNodeForPackage(Settings.class);
 
@@ -94,21 +93,6 @@ public class Settings {
         prefs.putInt(KEY_ADB_TIMEOUT, Math.max(2, seconds));
     }
 
-    public boolean isSimulationEnabled() {
-        return prefs.getBoolean(KEY_SIM_ENABLED, false);
-    }
-
-    public void setSimulationEnabled(boolean enabled) {
-        prefs.putBoolean(KEY_SIM_ENABLED, enabled);
-    }
-
-    public String getSimulationFile() {
-        return prefs.get(KEY_SIM_FILE, "");
-    }
-
-    public void setSimulationFile(String path) {
-        prefs.put(KEY_SIM_FILE, path == null ? "" : path.trim());
-    }
 
     public int getPingMaxConcurrency() {
         return prefs.getInt(KEY_PING_MAX_CONCURRENCY, 6);
@@ -172,5 +156,13 @@ public class Settings {
 
     public void setWindowHeight(double value) {
         prefs.putDouble(KEY_LAST_HEIGHT, Math.max(600, value));
+    }
+
+    public String getLastProjectPath() {
+        return prefs.get(KEY_LAST_PROJECT, "");
+    }
+
+    public void setLastProjectPath(String path) {
+        prefs.put(KEY_LAST_PROJECT, path == null ? "" : path.trim());
     }
 }

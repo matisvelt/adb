@@ -1,24 +1,27 @@
-# Architecture
+# Architecture (RigSort v0.2)
 
 ## Layers
-- UI layer: JavaFX, binds to observable device list and properties.
-- DeviceManager: schedules polling/pinging and updates the registry.
-- ADBService: runs adb commands with timeouts and captures stdout/stderr.
-- Models: DeviceInfo + DeviceStatus.
-
-## Threading Model
-- UI updates always on JavaFX thread via `Platform.runLater`.
-- Device polling and pinging on background scheduler and executor pools.
-- ADB I/O on a dedicated cached thread pool.
+- UI: JavaFX (ribbon, table view, inspector, status/log).
+- ADB Layer: `ADBService` (single execution gate).
+- Device Orchestration: `DeviceManager` (polling, pinging, registry).
+- Sorter Core:
+  - ProjectManager (project config + manifest + audit)
+  - FileScanner (manifest entries)
+  - PreviewGenerator (host‑side previews)
+  - WorkerClient + WorkerMonitor (ADB forward + HTTP)
+  - Dispatcher (batching, retries, backoff)
+  - RulesEngine (deterministic routing)
+  - FileMover (safe move + undo)
 
 ## Data Flow
-1. Scheduler triggers `adb devices -l`.
-2. Output is parsed to `ParsedDevice` objects.
-3. Registry is updated and diffed against prior scan.
-4. UI list is updated via observable bindings.
-5. Pings run in parallel and update device ping status.
+1. Scan builds manifest.
+2. Previews generated on host cache.
+3. Dispatcher sends preview batches via ADB forward.
+4. Worker returns labels + metadata.
+5. Rules applied; low confidence → Review.
+6. FileMover moves originals + audit.
 
-## Extension Points
-- ADBService is the only execution path for ADB commands.
-- DeviceManager is the orchestration hub; future phases extend here.
-- UI is bound to models; additional tabs/panels can subscribe to the same observable state.
+## Concurrency
+- UI thread never blocked.
+- ADB calls only via ADBService.
+- Dispatcher uses background executor + backoff.

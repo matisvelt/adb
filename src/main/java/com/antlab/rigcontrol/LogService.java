@@ -20,7 +20,7 @@ public class LogService {
     private final Handler fileHandler;
 
     public LogService(Path logDir) {
-        logger = Logger.getLogger("RigControl");
+        logger = Logger.getLogger("RigSort");
         logger.setUseParentHandlers(false);
 
         try {
@@ -30,7 +30,7 @@ public class LogService {
         }
 
         String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
-        Path logFile = logDir.resolve("rigcontrol-" + timestamp + ".log");
+        Path logFile = logDir.resolve("rigsort-" + timestamp + ".log");
 
         listHandler = new ListHandler();
         listHandler.setFormatter(new SimpleFormatter());

@@ -1,15 +1,13 @@
-# Operations
+# Operations (RigSort v0.2)
 
 ## Logs
-- Location: `~/.rigcontrol/logs/`
-- Each run writes a timestamped file.
+- Desktop logs: `~/.rigsort/logs/`
 
-## Troubleshooting Checklist
-1. `adb devices -l` lists expected devices.
-2. Unauthorized devices require ADB key approval.
-3. If polling shows all disconnected, check ADB path in settings.
-4. If pings fail, verify device is in `device` state.
-5. For demo/testing without hardware, enable simulation and set a file path.
+## Troubleshooting
+1. Verify `adb devices -l` shows expected devices.
+2. If worker health fails, ensure the worker app is running on the device.
+3. Forward a port manually: `adb -s <SERIAL> forward tcp:18090 tcp:18080`.
+4. Check ADB path in Settings.
 
 ## Safe Restart
 - Close the app window.

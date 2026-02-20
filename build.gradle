@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'com.antlab'
-version = '0.1.0'
+version = '0.2.0'
 
 java {
     toolchain {
@@ -33,7 +33,7 @@ javafx {
 
 application {
     mainClass = 'com.antlab.rigcontrol.App'
-    applicationName = 'System Thinker'
+    applicationName = 'RigSort'
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -41,6 +41,11 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 dependencies {
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.1'
+    implementation 'org.apache.pdfbox:pdfbox:2.0.30'
+    implementation 'com.drewnoakes:metadata-extractor:2.19.0'
+    implementation 'com.luciad.imageio.webp:luciad-imageio-webp:1.0.0'
+    implementation 'com.github.gotson.nightmonkeys:imageio-heif:1.0.0'
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.10.2'
 }
@@ -52,7 +57,7 @@ test {
 jar {
     manifest {
         attributes(
-                'Implementation-Title': 'System Thinker',
+                'Implementation-Title': 'RigSort',
                 'Implementation-Version': gitHash
         )
     }
@@ -63,7 +68,7 @@ tasks.register('jpackageApp', Exec) {
     def javaHome = System.getenv("JAVA_HOME") ?: ""
     def javaBin = javaHome ? "${javaHome}/bin/jpackage" : "jpackage"
     def inputDir = file("${buildDir}/libs")
-    def appName = "System Thinker"
+    def appName = "RigSort"
     def mainJar = tasks.jar.archiveFile.get().asFile.name
     def modulePath = configurations.runtimeClasspath.asPath
     def addModules = "javafx.controls,javafx.fxml,java.logging,java.prefs,java.desktop"

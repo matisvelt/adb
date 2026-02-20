@@ -1,53 +1,25 @@
-# UI Wireframes (Text)
+# UI Wireframes (RigSort v0.2)
 
-## v0.1 Dashboard
-- Top bar: `Rescan` `Ping all` `Settings` device count chip
-- Center: device table
-- Bottom: logs + status line
+## Main Layout
+- Ribbon/Toolbar (Project, Scan, Rules, Move, Settings)
+- Left navigation (Monitor, Sorter, Rules, Review, Audit)
+- Center: spreadsheet‑style table
+- Right: inspector/properties
+- Bottom: status bar + collapsible log
 
-## Phase 1.0 Monte Carlo Dashboard
+## Monitor
+- Device table with ADB state + worker health
 
-### Top Bar
-- `Run Batch` `Pause` `Resume` `Stop` `Settings`
-- Batch ID + overall state
+## Sorter
+- File/job table with status, label, confidence, destination
+- Source/Destination root controls
+- Scan + Start/Stop
 
-### Left Panel: Batch Config
-- Distribution selector
-- Parameters input (mu/sigma or min/max)
-- Sample count
-- Seed strategy
-- Output format + destination
+## Rules
+- Editable rules table (Enabled, Condition, Destination, Notes)
 
-### Center: Device Allocation
-- Table: device, assigned samples, progress, ETA, error count
-- Actions: `rebalance`, `drain`, `blacklist`
+## Review
+- Review queue + manual move actions
 
-### Right Panel: Progress & Statistics
-- Overall progress bar
-- Live metrics: mean, variance, percentiles
-- Histogram (simple bar chart)
-
-### Bottom: Logs & Events
-- Timeline of batch events
-- Warnings and errors
-
-## Phase 2.0 Neural Inference Dashboard
-
-### Top Bar
-- `Deploy Model` `Validate` `Run Inference` `Rollback`
-
-### Left Panel: Model Registry
-- Model list with version, hash, size, targets
-- Status: deployed/validated
-
-### Center: Inference Runs
-- Table: run id, devices, accuracy, latency, status
-
-### Right Panel: Confidence & Calibration
-- Calibration curve
-- Confidence distribution
-- Accuracy/latency summary
-
-### Bottom: Logs & Alerts
-- Deployment logs
-- Validation failures or drift alerts
+## Audit
+- Move history table + undo

@@ -1,41 +1,39 @@
-# RigControl v0.1 Spec
+# RigSort v0.2 Spec
 
 ## Scope
-- Discover Android devices via `adb devices -l` every 2–3 seconds.
-- Maintain a device registry keyed by serial number.
-- Display device list with serial, ADB state, model, Android version, last seen, ping status, last ping.
-- Ping devices via `adb -s <serial> shell echo PING` every ~10 seconds and on demand.
-- Provide a simple settings panel to change ADB path and timing intervals.
-- Optional simulation mode that reads a saved `adb devices -l` output file.
-- UI affordances for ADB health, scan duration, CSV export, and filtering disconnected devices.
-- ADB rate limit guard to prevent command storms.
-- Exponential-like ping backoff with a maximum cap.
-- Persisted window size.
+- Offline, privacy‑local SSD sorting with ADB‑connected Android workers.
+- Host scans a Source Root, builds a manifest, generates previews, dispatches jobs, applies rules, and safely moves originals.
+- Phones never mount the SSD; devices only receive preview bytes and return metadata/labels.
 
-## Non-goals
-- No screen mirroring, streaming, or device UI interactions.
-- No job dispatch or worker orchestration in v0.1.
+## Supported Files (v0.2)
+- Images: jpg/jpeg/png/heic/webp
+- Documents: pdf
+- Text: txt/docx (basic)
 
-## Device States
-- `device`: online and responding to ADB.
-- `offline`: ADB sees the device but it is not responsive.
-- `unauthorized`: ADB key not authorized on the device.
-- `disconnected`: previously seen, no longer present in latest scan.
+## Pipeline
+1. Scan source root recursively, build manifest entries with stable FileId.
+2. Generate preview on host (max long edge, WEBP preferred). Apply EXIF rotation.
+3. Dispatch preview batches to devices via ADB forward → local HTTP.
+4. Receive labels + metadata only.
+5. Apply deterministic rules; low‑confidence items go to Review.
+6. Move originals safely; audit every move.
+7. Undo uses audit log.
 
-## Timing
-- Discovery poll interval: default 3 seconds (min 1).
-- Ping interval: default 10 seconds (min 3).
-- ADB call timeout: default 5 seconds (min 2).
-- Ping concurrency: default 6 (min 1).
-- Ping failure backoff: default 10 seconds (min 2).
-- Ping backoff step: default 10 seconds (min 5).
-- Ping backoff max: default 120 seconds (min 10).
-- ADB rate limit: default 20 commands per 5 seconds.
+## Labels
+- PHOTO_PEOPLE
+- PHOTO_NO_PEOPLE
+- SCREENSHOT
+- DOCUMENT_INVOICE
+- DOCUMENT_OTHER
+- UNKNOWN
 
-## Error Handling
-- ADB timeouts mark ping as FAIL and leave device in last known ADB state.
-- Failure of `adb devices -l` marks all devices as `disconnected` until the next successful poll.
+## Safety
+- No cloud services or external network calls beyond ADB.
+- Originals moved only by host.
+- Crash‑safe move strategy (atomic where possible, copy+verify fallback).
+- Audit log + undo.
 
-## Persistence
-- Settings stored locally via Java Preferences.
-- Logs written to `~/.rigcontrol/logs/` with timestamped filenames.
+## Non‑Goals
+- No screen mirroring or device UI control.
+- No on‑device storage of originals.
+- No third‑party online LLMs.

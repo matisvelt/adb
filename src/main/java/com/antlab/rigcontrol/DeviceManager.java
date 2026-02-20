@@ -6,8 +6,6 @@ import javafx.beans.property.StringProperty;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -225,27 +223,21 @@ public class DeviceManager {
             }
             totalPolls.incrementAndGet();
             String output;
-            if (settings.isSimulationEnabled() && !settings.getSimulationFile().isBlank()) {
-                Path simPath = Path.of(settings.getSimulationFile());
-                output = Files.readString(simPath);
-                Platform.runLater(() -> adbHealth.set("SIMULATION"));
-            } else {
-                if (!tryConsumeAdbToken()) {
-                    Platform.runLater(() -> lastError.set("adb rate limit hit"));
-                    return;
-                }
-                ADBService.ExecResult res = adbService.runAdb(List.of("devices", "-l"), Duration.ofSeconds(settings.getAdbTimeoutSeconds()));
-                if (res.timedOut || res.exitCode != 0) {
-                    logger.warning("adb devices -l failed: " + res.stderr);
-                    Platform.runLater(() -> adbHealth.set("ADB ERROR"));
-                    Platform.runLater(() -> lastError.set("adb devices -l failed: " + (res.stderr == null ? "" : res.stderr.trim())));
-                    markAllDisconnected();
-                    return;
-                }
-                output = res.stdout;
-                Platform.runLater(() -> adbHealth.set("ADB OK"));
-                Platform.runLater(() -> lastError.set(""));
+            if (!tryConsumeAdbToken()) {
+                Platform.runLater(() -> lastError.set("adb rate limit hit"));
+                return;
             }
+            ADBService.ExecResult res = adbService.runAdb(List.of("devices", "-l"), Duration.ofSeconds(settings.getAdbTimeoutSeconds()));
+            if (res.timedOut || res.exitCode != 0) {
+                logger.warning("adb devices -l failed: " + res.stderr);
+                Platform.runLater(() -> adbHealth.set("ADB ERROR"));
+                Platform.runLater(() -> lastError.set("adb devices -l failed: " + (res.stderr == null ? "" : res.stderr.trim())));
+                markAllDisconnected();
+                return;
+            }
+            output = res.stdout;
+            Platform.runLater(() -> adbHealth.set("ADB OK"));
+            Platform.runLater(() -> lastError.set(""));
             Map<String, ParsedDevice> parsed = parseDevices(output);
             Instant now = Instant.now();
 

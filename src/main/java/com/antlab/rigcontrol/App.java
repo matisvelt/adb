@@ -1,2012 +1,1156 @@
 package com.antlab.rigcontrol;
 
+import com.antlab.rigcontrol.sorter.*;
+import com.antlab.rigcontrol.worker.WorkerClient;
+import com.antlab.rigcontrol.worker.WorkerMonitor;
+import javafx.animation.KeyFrame;
+import javafx.animation.Timeline;
 import javafx.application.Application;
 import javafx.application.Platform;
-import javafx.animation.KeyFrame;
-import javafx.animation.PauseTransition;
-import javafx.animation.Timeline;
-import javafx.collections.ListChangeListener;
+import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
-import javafx.scene.chart.LineChart;
-import javafx.scene.chart.NumberAxis;
-import javafx.scene.chart.XYChart;
 import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
+import javafx.scene.control.cell.CheckBoxTableCell;
+import javafx.scene.control.cell.TextFieldTableCell;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
-import javafx.scene.input.Clipboard;
-import javafx.scene.input.ClipboardContent;
+import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 import javafx.util.Duration;
-import javafx.beans.property.SimpleStringProperty;
 
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.util.ArrayList;
+import java.text.DecimalFormat;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
-import java.util.Set;
-import java.util.concurrent.CompletableFuture;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
-import javafx.scene.control.cell.TextFieldTableCell;
-
-import com.antlab.systemthinker.intel.sim.AnalystPolicy;
-import com.antlab.systemthinker.intel.sim.CostWeights;
-import com.antlab.systemthinker.intel.sim.ExperimentWriter;
-import com.antlab.systemthinker.intel.sim.IntelBatchSummary;
-import com.antlab.systemthinker.intel.sim.IntelDatasetConfig;
-import com.antlab.systemthinker.intel.sim.IntelDatasetGenerator;
-import com.antlab.systemthinker.intel.sim.IntelScenarioConfig;
-import com.antlab.systemthinker.intel.sim.IntelSimulator;
-import com.antlab.systemthinker.intel.sim.IntelSurrogateModel;
-import com.antlab.systemthinker.intel.sim.IntelSurrogateTrainer;
-import com.antlab.systemthinker.intel.sim.IntelSweepRunner;
-import com.antlab.systemthinker.intel.sim.MonteCarloRunnerIntel;
-import com.antlab.systemthinker.intel.sim.SourceConfig;
-import com.antlab.systemthinker.intel.sim.SweepPoint;
-import com.antlab.systemthinker.intel.sim.SweepSeries;
-
-import com.antlab.systemthinker.sim.*;
+import java.time.Duration;
+import java.util.logging.Logger;
 
 public class App extends Application {
-    private DeviceManager deviceManager;
+    private final ObservableList<FileRecord> fileRecords = FXCollections.observableArrayList();
+    private final ObservableList<Rule> ruleRecords = FXCollections.observableArrayList();
+    private final ObservableList<AuditRecord> auditRecords = FXCollections.observableArrayList();
+
+    private Settings settings;
     private LogService logService;
-    private ExecutorService simExecutor;
-    private MonteCarloRunner monteCarloRunner;
-    private MonteCarloRunnerIntel intelRunner;
-    private IntelSweepRunner intelSweepRunner;
-    private ExperimentWriter experimentWriter;
-    private IntelDatasetGenerator intelDatasetGenerator;
-    private IntelSurrogateModel intelSurrogateModel;
+    private ADBService adbService;
+    private DeviceManager deviceManager;
+    private WorkerClient workerClient;
+    private WorkerMonitor workerMonitor;
+    private ProjectManager projectManager;
+    private Dispatcher dispatcher;
+    private PreviewGenerator previewGenerator;
+    private RulesEngine rulesEngine;
+    private FileMover fileMover;
+
+    private ExecutorService ioExecutor;
+
+    private TableView<FileRecord> sorterTable;
+    private TableView<FileRecord> reviewTable;
+    private TableView<AuditRecord> auditTable;
+    private FilteredList<FileRecord> sorterFiltered;
+    private FilteredList<FileRecord> reviewFiltered;
+    private FilteredList<AuditRecord> auditFiltered;
+    private TextField auditSearchField;
+    private ListView<String> logView;
+    private Label statusCounts;
+    private Label queueDepthLabel;
+    private Label deviceCountLabel;
+
+    private ImageView inspectorImage;
+    private Label inspectorPath;
+    private Label inspectorMeta;
+    private Label inspectorLabel;
+    private Label inspectorDestination;
+    private Label inspectorRule;
+
+    private TextField sourceField;
+    private TextField destField;
+    private ComboBox<String> filterBox;
+    private TextField batchField;
+    private TextField inFlightField;
     private Stage primaryStage;
 
     @Override
     public void start(Stage stage) {
         Platform.setImplicitExit(false);
         primaryStage = stage;
-        Settings settings = new Settings();
-        logService = new LogService(Path.of(System.getProperty("user.home"), ".rigcontrol", "logs"));
-        ADBService adbService = new ADBService(settings, logService.getLogger());
-        deviceManager = new DeviceManager(settings, adbService, logService.getLogger());
-        simExecutor = Executors.newFixedThreadPool(2, r -> {
-            Thread t = new Thread(r, "sim-worker");
+        settings = new Settings();
+        logService = new LogService(Path.of(System.getProperty("user.home"), ".rigsort", "logs"));
+        Logger logger = logService.getLogger();
+
+        ADBService adbService = new ADBService(settings, logger);
+        this.adbService = adbService;
+        deviceManager = new DeviceManager(settings, adbService, logger);
+        workerClient = new WorkerClient(adbService, logger);
+        workerMonitor = new WorkerMonitor(deviceManager, workerClient);
+        previewGenerator = new PreviewGenerator(logger);
+        rulesEngine = new RulesEngine();
+        fileMover = new FileMover(logger);
+        projectManager = new ProjectManager();
+
+        ioExecutor = Executors.newFixedThreadPool(4, r -> {
+            Thread t = new Thread(r, "rigsort-io");
             t.setDaemon(true);
             return t;
         });
-        monteCarloRunner = new MonteCarloRunner(new AntWarSimulator(), logService.getLogger(),
-                MonteCarloRunner.DEFAULT_EPSILON,
-                MonteCarloRunner.DEFAULT_CHECK_INTERVAL,
-                MonteCarloRunner.DEFAULT_STABLE_CHECKS);
-        intelRunner = new MonteCarloRunnerIntel(new IntelSimulator(),
-                MonteCarloRunnerIntel.DEFAULT_EPSILON,
-                MonteCarloRunnerIntel.DEFAULT_CHECK_INTERVAL,
-                MonteCarloRunnerIntel.DEFAULT_STABLE_CHECKS);
-        intelSweepRunner = new IntelSweepRunner(intelRunner);
-        experimentWriter = new ExperimentWriter();
-        intelDatasetGenerator = new IntelDatasetGenerator(intelRunner, experimentWriter);
-        logService.getLogger().info("App starting");
 
-        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) ->
-                logService.getLogger().severe("Uncaught exception on " + thread.getName() + ": " + throwable));
+        dispatcher = new Dispatcher(deviceManager, projectManager, previewGenerator, rulesEngine, fileMover, workerClient, logger);
 
         BorderPane root = new BorderPane();
-        root.setPadding(new Insets(12));
+        root.setPadding(new Insets(8));
         root.getStyleClass().add("root");
 
-        VBox topBar = new VBox(6);
-        topBar.getStyleClass().add("topbar");
-        Button rescanButton = new Button("Rescan");
-        Button rescanInfo = infoButton("Force an immediate device discovery scan.");
-        Button pingAllButton = new Button("Ping all");
-        Button pingAllInfo = infoButton("Send a ping to all online devices.");
-        Button demoButton = new Button("Demo Data");
-        Button demoInfo = infoButton("Load a simulated adb devices list for testing without hardware.");
-        Button settingsButton = new Button("Settings");
-        Button settingsInfo = infoButton("Configure ADB path, polling intervals, and limits.");
-        Button legendButton = new Button("Legend");
-        Button legendInfo = infoButton("Explain device states (device/offline/unauthorized/disconnected).");
-        Button helpButton = new Button("Help");
-        Button helpInfo = infoButton("Show reconnect checklist and troubleshooting steps.");
-        Button importExpectedButton = new Button("Import Expected");
-        Button importExpectedInfo = infoButton("Import expected serials from CSV/TXT.");
-        Button exportSnapshotButton = new Button("Export Snapshot");
-        Button exportSnapshotInfo = infoButton("Export the current table as CSV.");
-        Button restartAdbButton = new Button("Restart ADB");
-        Button restartAdbInfo = infoButton("Restart the local ADB server.");
-        Button copyButton = new Button("Copy CSV");
-        Button copyInfo = infoButton("Copy current table to clipboard as CSV.");
-        Button quitButton = new Button("Quit");
-        Button quitInfo = infoButton("Exit System Thinker.");
-        CheckBox hideDisconnected = new CheckBox("Hide disconnected");
-        Button hideDisconnectedInfo = infoButton("Hide devices that are no longer present.");
-        CheckBox hideEmulators = new CheckBox("Hide emulators");
-        Button hideEmulatorsInfo = infoButton("Hide Android emulator devices.");
-        CheckBox pausePolling = new CheckBox("Pause");
-        Button pausePollingInfo = infoButton("Pause polling and pinging without closing the app.");
-        rescanButton.getStyleClass().add("secondary-button");
-        pingAllButton.getStyleClass().add("primary-button");
-        demoButton.getStyleClass().add("secondary-button");
-        settingsButton.getStyleClass().add("secondary-button");
-        legendButton.getStyleClass().add("secondary-button");
-        helpButton.getStyleClass().add("secondary-button");
-        importExpectedButton.getStyleClass().add("secondary-button");
-        exportSnapshotButton.getStyleClass().add("secondary-button");
-        restartAdbButton.getStyleClass().add("secondary-button");
-        quitButton.getStyleClass().add("secondary-button");
-        copyButton.getStyleClass().add("secondary-button");
-        Label deviceCountLabel = new Label();
-        deviceCountLabel.getStyleClass().add("chip-primary");
-        Label adbHealthLabel = new Label();
-        adbHealthLabel.getStyleClass().add("chip-ok");
-        Label adbPathLabel = new Label();
-        adbPathLabel.getStyleClass().add("chip-neutral");
-        Label scanDurationLabel = new Label();
-        scanDurationLabel.getStyleClass().add("chip-neutral");
+        VBox ribbon = buildRibbon(stage);
+        root.setTop(ribbon);
 
-        final boolean[] allowExit = {false};
+        HBox main = new HBox(10);
+        Node nav = buildNav();
+        StackPane center = new StackPane();
+        Node monitorPage = buildMonitorPage();
+        Node sorterPage = buildSorterPage();
+        Node rulesPage = buildRulesPage();
+        Node reviewPage = buildReviewPage();
+        Node auditPage = buildAuditPage();
 
-        FilteredList<DeviceInfo> filtered = new FilteredList<>(deviceManager.getDevices(), d -> true);
+        center.getChildren().addAll(monitorPage, sorterPage, rulesPage, reviewPage, auditPage);
+        monitorPage.setVisible(true);
+        sorterPage.setVisible(false);
+        rulesPage.setVisible(false);
+        reviewPage.setVisible(false);
+        auditPage.setVisible(false);
 
-        MenuBar menuBar = new MenuBar();
-        Menu fileMenu = new Menu("File");
-        MenuItem exportItem = new MenuItem("Export Snapshot...");
-        MenuItem quitItem = new MenuItem("Quit");
-        quitItem.setOnAction(e -> requestExit(stage, allowExit));
-        fileMenu.getItems().addAll(exportItem, new SeparatorMenuItem(), quitItem);
+        VBox inspector = buildInspector();
+        main.getChildren().addAll(nav, center, inspector);
+        HBox.setHgrow(center, Priority.ALWAYS);
+        root.setCenter(main);
 
-        Menu viewMenu = new Menu("View");
-        CheckMenuItem hideDisconnectedItem = new CheckMenuItem("Hide disconnected");
-        hideDisconnectedItem.selectedProperty().bindBidirectional(hideDisconnected.selectedProperty());
-        CheckMenuItem hideEmulatorsItem = new CheckMenuItem("Hide emulators");
-        hideEmulatorsItem.selectedProperty().bindBidirectional(hideEmulators.selectedProperty());
-        CheckMenuItem pausePollingItem = new CheckMenuItem("Pause polling");
-        pausePollingItem.selectedProperty().bindBidirectional(pausePolling.selectedProperty());
-        viewMenu.getItems().addAll(hideDisconnectedItem, hideEmulatorsItem, pausePollingItem);
-
-        Menu toolsMenu = new Menu("Tools");
-        MenuItem rescanItem = new MenuItem("Rescan");
-        rescanItem.setOnAction(e -> deviceManager.rescanNow());
-        MenuItem pingAllItem = new MenuItem("Ping all");
-        pingAllItem.setOnAction(e -> deviceManager.pingAll());
-        MenuItem restartAdbItem = new MenuItem("Restart ADB");
-        restartAdbItem.setOnAction(e -> deviceManager.restartAdb());
-        MenuItem demoItem = new MenuItem("Demo data");
-        demoItem.setOnAction(e -> enableDemoData(settings));
-        MenuItem importExpectedItem = new MenuItem("Import expected list...");
-        importExpectedItem.setOnAction(e -> importExpected(stage));
-        toolsMenu.getItems().addAll(rescanItem, pingAllItem, restartAdbItem, new SeparatorMenuItem(), demoItem, importExpectedItem);
-
-        Menu helpMenu = new Menu("Help");
-        MenuItem legendItem = new MenuItem("Device legend");
-        legendItem.setOnAction(e -> showLegend(stage));
-        MenuItem checklistItem = new MenuItem("Reconnect checklist");
-        checklistItem.setOnAction(e -> showReconnectChecklist(stage));
-        helpMenu.getItems().addAll(legendItem, checklistItem);
-
-        menuBar.getMenus().addAll(fileMenu, viewMenu, toolsMenu, helpMenu);
-
-        VBox scanGroup = buildRibbonGroup("Scan",
-                new HBox(6, rescanButton, rescanInfo),
-                new HBox(6, pausePolling, pausePollingInfo),
-                new HBox(6, restartAdbButton, restartAdbInfo)
-        );
-
-        VBox pingGroup = buildRibbonGroup("Ping",
-                new HBox(6, pingAllButton, pingAllInfo)
-        );
-
-        VBox dataGroup = buildRibbonGroup("Data",
-                new HBox(6, demoButton, demoInfo),
-                new HBox(6, importExpectedButton, importExpectedInfo),
-                new HBox(6, exportSnapshotButton, exportSnapshotInfo),
-                new HBox(6, copyButton, copyInfo)
-        );
-
-        VBox filterGroup = buildRibbonGroup("Filters",
-                new HBox(6, hideDisconnected, hideDisconnectedInfo),
-                new HBox(6, hideEmulators, hideEmulatorsInfo)
-        );
-
-        VBox helpGroup = buildRibbonGroup("Help",
-                new HBox(6, legendButton, legendInfo),
-                new HBox(6, helpButton, helpInfo)
-        );
-
-        VBox settingsGroup = buildRibbonGroup("System",
-                new HBox(6, settingsButton, settingsInfo),
-                new HBox(6, quitButton, quitInfo)
-        );
-
-        HBox leftRibbon = new HBox(12,
-                scanGroup,
-                new Separator(javafx.geometry.Orientation.VERTICAL),
-                pingGroup,
-                new Separator(javafx.geometry.Orientation.VERTICAL),
-                dataGroup,
-                new Separator(javafx.geometry.Orientation.VERTICAL),
-                filterGroup,
-                new Separator(javafx.geometry.Orientation.VERTICAL),
-                helpGroup,
-                new Separator(javafx.geometry.Orientation.VERTICAL),
-                settingsGroup
-        );
-        leftRibbon.getStyleClass().add("ribbon");
-
-        HBox statusRight = new HBox(8, deviceCountLabel, adbHealthLabel, adbPathLabel, scanDurationLabel);
-        statusRight.getStyleClass().add("toolbar-group");
-        statusRight.setAlignment(Pos.CENTER_RIGHT);
-
-        BorderPane ribbonRow = new BorderPane();
-        ribbonRow.setLeft(leftRibbon);
-        ribbonRow.setRight(statusRight);
-        ribbonRow.setPadding(new Insets(6, 0, 0, 0));
-
-        topBar.getChildren().addAll(menuBar, ribbonRow);
-        root.setTop(topBar);
-
-        exportItem.setOnAction(e -> exportSnapshot(stage, filtered));
-        hideDisconnected.selectedProperty().addListener((obs, oldVal, newVal) -> {
-            filtered.setPredicate(d -> filterDevice(d, hideDisconnected.isSelected(), hideEmulators.isSelected()));
-        });
-        hideEmulators.selectedProperty().addListener((obs, oldVal, newVal) -> {
-            filtered.setPredicate(d -> filterDevice(d, hideDisconnected.isSelected(), hideEmulators.isSelected()));
-        });
-
-        TableView<DeviceInfo> table = new TableView<>(filtered);
-        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
-        table.setEditable(true);
-
-        TableColumn<DeviceInfo, String> serialCol = new TableColumn<>("Serial");
-        serialCol.setCellValueFactory(data -> data.getValue().serialProperty());
-
-        TableColumn<DeviceInfo, String> indexCol = new TableColumn<>("#");
-        indexCol.setCellValueFactory(cell -> new javafx.beans.property.SimpleStringProperty(
-                String.valueOf(table.getItems().indexOf(cell.getValue()) + 1)
-        ));
-        indexCol.setPrefWidth(50);
-
-        TableColumn<DeviceInfo, String> stateCol = new TableColumn<>("ADB State");
-        stateCol.setCellValueFactory(data -> data.getValue().adbStateProperty());
-
-        TableColumn<DeviceInfo, String> modelCol = new TableColumn<>("Model");
-        modelCol.setCellValueFactory(data -> data.getValue().modelProperty());
-
-        TableColumn<DeviceInfo, String> versionCol = new TableColumn<>("Android");
-        versionCol.setCellValueFactory(data -> data.getValue().androidVersionProperty());
-
-        TableColumn<DeviceInfo, String> lastSeenCol = new TableColumn<>("Last Seen");
-        lastSeenCol.setCellValueFactory(data -> data.getValue().lastSeenProperty());
-
-        TableColumn<DeviceInfo, String> pingCol = new TableColumn<>("Ping");
-        pingCol.setCellValueFactory(data -> data.getValue().pingStatusProperty());
-
-        TableColumn<DeviceInfo, String> lastPingCol = new TableColumn<>("Last Ping");
-        lastPingCol.setCellValueFactory(data -> data.getValue().lastPingProperty());
-
-        TableColumn<DeviceInfo, String> expectedCol = new TableColumn<>("Expected");
-        expectedCol.setCellValueFactory(data -> data.getValue().expectedProperty());
-
-        TableColumn<DeviceInfo, String> tagCol = new TableColumn<>("Tag");
-        tagCol.setCellValueFactory(data -> data.getValue().tagProperty());
-        tagCol.setCellFactory(TextFieldTableCell.forTableColumn());
-        tagCol.setOnEditCommit(e -> e.getRowValue().setTag(e.getNewValue()));
-
-        table.getColumns().addAll(indexCol, serialCol, stateCol, modelCol, versionCol, lastSeenCol, pingCol, lastPingCol, expectedCol, tagCol);
-        VBox tableCard = new VBox(table);
-        tableCard.getStyleClass().add("card");
-        TabPane centerTabs = new TabPane();
-        Tab monitorTab = new Tab("Monitor", tableCard);
-        monitorTab.setClosable(false);
-        Tab intelTab = new Tab("Intel Analytics", buildIntelAnalyticsPanel());
-        intelTab.setClosable(false);
-        Tab mcTab = new Tab("Monte Carlo", buildMonteCarloPanel());
-        mcTab.setClosable(false);
-        Tab aiTab = new Tab("Neural", buildNeuralPanel());
-        aiTab.setClosable(false);
-        centerTabs.getTabs().addAll(monitorTab, intelTab, mcTab, aiTab);
-        root.setCenter(centerTabs);
-
-        ListView<String> logView = new ListView<>(logService.getLogLines());
-        logView.setPrefHeight(160);
-        logView.getStyleClass().add("log-list");
-
-        Label statusLine = new Label();
-        statusLine.getStyleClass().add("status-bar");
-
-        Label lastErrorLabel = new Label("Last error: -");
-        lastErrorLabel.getStyleClass().add("status-bar");
-
-        Label telemetryLabel = new Label();
-        telemetryLabel.getStyleClass().add("status-bar");
-        Label expectedMissingLabel = new Label("Expected missing: 0");
-        expectedMissingLabel.getStyleClass().add("status-bar");
-
-        Label actionLabel = new Label("Action: -");
-        actionLabel.getStyleClass().add("status-bar");
-        HBox telemetryRow = new HBox(12, telemetryLabel, expectedMissingLabel, lastErrorLabel, actionLabel);
-        telemetryRow.setAlignment(Pos.CENTER_LEFT);
-
-        VBox bottomCard = new VBox(10, new Label("Logs"), logView, telemetryRow, statusLine);
-        bottomCard.getStyleClass().add("card");
-        bottomCard.setPadding(new Insets(12));
-        VBox bottom = new VBox(10, bottomCard);
-        bottom.setPadding(new Insets(10, 0, 0, 0));
+        VBox bottom = buildBottom();
         root.setBottom(bottom);
 
-        deviceManager.getDevices().addListener((ListChangeListener<DeviceInfo>) change -> {
-            while (change.next()) {
-                if (change.wasAdded()) {
-                    for (DeviceInfo info : change.getAddedSubList()) {
-                        info.adbStateProperty().addListener((obs, oldVal, newVal) -> updateStatus(deviceCountLabel, statusLine));
-                        info.adbStateProperty().addListener((obs, oldVal, newVal) -> filtered.setPredicate(d -> !hideDisconnected.isSelected() || !"disconnected".equalsIgnoreCase(d.getAdbState())));
-                    }
-                }
-            }
-            updateStatus(deviceCountLabel, statusLine);
-        });
-        updateStatus(deviceCountLabel, statusLine);
-
-        deviceManager.adbHealthProperty().addListener((obs, oldVal, newVal) -> updateHealthLabel(adbHealthLabel, newVal));
-        deviceManager.lastScanDurationProperty().addListener((obs, oldVal, newVal) -> scanDurationLabel.setText("Scan: " + newVal));
-        deviceManager.lastErrorProperty().addListener((obs, oldVal, newVal) -> lastErrorLabel.setText("Last error: " + (newVal == null || newVal.isBlank() ? "-" : newVal)));
-        deviceManager.expectedMissingProperty().addListener((obs, oldVal, newVal) -> expectedMissingLabel.setText("Expected missing: " + newVal));
-        updateHealthLabel(adbHealthLabel, deviceManager.adbHealthProperty().get());
-        scanDurationLabel.setText("Scan: " + deviceManager.lastScanDurationProperty().get());
-        updateAdbPathLabel(adbPathLabel, settings);
-
-        copyButton.setOnAction(e -> {
-            copyCsv(filtered);
-            flashAction(actionLabel, "Copied CSV");
-        });
-        exportSnapshotButton.setOnAction(e -> {
-            exportSnapshot(stage, filtered);
-            flashAction(actionLabel, "Export snapshot");
-        });
-
-        rescanButton.setOnAction(e -> {
-            deviceManager.rescanNow();
-            flashAction(actionLabel, "Rescan requested");
-        });
-        pingAllButton.setOnAction(e -> {
-            deviceManager.pingAll();
-            flashAction(actionLabel, "Ping all queued");
-        });
-        demoButton.setOnAction(e -> {
-            enableDemoData(settings);
-            flashAction(actionLabel, "Demo data loaded");
-        });
-        settingsButton.setOnAction(e -> {
-            SettingsDialog.show(stage, settings, deviceManager);
-            updateAdbPathLabel(adbPathLabel, settings);
-            flashAction(actionLabel, "Opened settings");
-        });
-        legendButton.setOnAction(e -> {
-            showLegend(stage);
-            flashAction(actionLabel, "Opened legend");
-        });
-        helpButton.setOnAction(e -> {
-            showReconnectChecklist(stage);
-            flashAction(actionLabel, "Opened help");
-        });
-        importExpectedButton.setOnAction(e -> {
-            importExpected(stage);
-            flashAction(actionLabel, "Import expected list");
-        });
-        restartAdbButton.setOnAction(e -> {
-            deviceManager.restartAdb();
-            flashAction(actionLabel, "Restarting ADB");
-        });
-        pausePolling.selectedProperty().addListener((obs, oldVal, newVal) -> {
-            deviceManager.setPaused(newVal);
-            flashAction(actionLabel, newVal ? "Polling paused" : "Polling resumed");
-        });
-        quitButton.setOnAction(e -> {
-            flashAction(actionLabel, "Quit requested");
-            requestExit(stage, allowExit);
-        });
-
-        Timeline telemetryTimer = new Timeline(new KeyFrame(javafx.util.Duration.seconds(1), e -> {
-            telemetryLabel.setText(buildTelemetryText(deviceManager));
-        }));
-        telemetryTimer.setCycleCount(Timeline.INDEFINITE);
-        telemetryTimer.play();
-
-        deviceManager.start();
+        registerNavHandlers(nav, monitorPage, sorterPage, rulesPage, reviewPage, auditPage);
 
         Scene scene = new Scene(root, settings.getWindowWidth(), settings.getWindowHeight());
         scene.getStylesheets().add(getClass().getResource("/app.css").toExternalForm());
-        stage.setTitle("System Thinker v0.1");
+        stage.setTitle("RigSort v0.2");
         stage.setScene(scene);
         stage.setOnCloseRequest(event -> {
-            if (!allowExit[0]) {
-                logService.getLogger().info("Close requested (blocked). Use Quit button.");
-                event.consume();
-                return;
-            }
-            logService.getLogger().info("Stage close requested");
+            event.consume();
+            shutdown();
         });
-        stage.setOnHidden(event -> logService.getLogger().info("Stage hidden"));
         stage.widthProperty().addListener((obs, oldVal, newVal) -> settings.setWindowWidth(newVal.doubleValue()));
         stage.heightProperty().addListener((obs, oldVal, newVal) -> settings.setWindowHeight(newVal.doubleValue()));
+
+        deviceManager.start();
+        workerMonitor.start();
+
+        Timeline refresh = new Timeline(new KeyFrame(Duration.seconds(1), e -> refreshUI()));
+        refresh.setCycleCount(Timeline.INDEFINITE);
+        refresh.play();
+
+        loadLastProject();
+
         stage.show();
     }
 
-    private void updateStatus(Label deviceCountLabel, Label statusLine) {
-        int total = deviceManager.getDevices().size();
-        long online = deviceManager.getDevices().stream().filter(d -> "device".equalsIgnoreCase(d.getAdbState())).count();
-        long offline = deviceManager.getDevices().stream().filter(d -> "offline".equalsIgnoreCase(d.getAdbState())).count();
-        long unauth = deviceManager.getDevices().stream().filter(d -> "unauthorized".equalsIgnoreCase(d.getAdbState())).count();
-        long disconnected = deviceManager.getDevices().stream().filter(d -> "disconnected".equalsIgnoreCase(d.getAdbState())).count();
+    private VBox buildRibbon(Stage stage) {
+        VBox ribbon = new VBox(6);
+        ribbon.getStyleClass().add("ribbon");
 
-        deviceCountLabel.setText("Devices: " + total + " (online " + online + ")");
-        statusLine.setText("Online: " + online + " | Offline: " + offline + " | Unauthorized: " + unauth + " | Disconnected: " + disconnected);
+        HBox row = new HBox(10);
+        row.setAlignment(Pos.CENTER_LEFT);
+
+        VBox projectGroup = ribbonGroup("Project",
+                actionButton("New", e -> newProject(stage)),
+                actionButton("Open", e -> openProject(stage)),
+                actionButton("Save", e -> saveProject())
+        );
+        VBox scanGroup = ribbonGroup("Scan",
+                actionButton("Scan", e -> scanSource()),
+                actionButton("Start", e -> startProcessing()),
+                actionButton("Stop", e -> stopProcessing())
+        );
+        VBox rulesGroup = ribbonGroup("Rules",
+                actionButton("Validate", e -> validateRules()),
+                actionButton("Refresh", e -> reloadRules())
+        );
+        VBox moveGroup = ribbonGroup("Move",
+                actionButton("Undo", e -> undoMoves())
+        );
+        VBox settingsGroup = ribbonGroup("Settings",
+                actionButton("ADB Settings", e -> SettingsDialog.show(stage, settings, deviceManager))
+        );
+
+        row.getChildren().addAll(projectGroup, scanGroup, rulesGroup, moveGroup, settingsGroup);
+        ribbon.getChildren().add(row);
+        return ribbon;
     }
 
-    private void updateHealthLabel(Label label, String health) {
-        label.getStyleClass().removeAll("chip-ok", "chip-warn", "chip-neutral");
-        if (health == null) {
-            label.setText("ADB ?");
-            label.getStyleClass().add("chip-neutral");
-            return;
-        }
-        label.setText(health);
-        if ("ADB OK".equalsIgnoreCase(health)) {
-            label.getStyleClass().add("chip-ok");
-        } else if ("SIMULATION".equalsIgnoreCase(health)) {
-            label.getStyleClass().add("chip-neutral");
-        } else {
-            label.getStyleClass().add("chip-warn");
-        }
+    private Node buildNav() {
+        VBox nav = new VBox(6);
+        nav.getStyleClass().add("nav");
+        ToggleGroup group = new ToggleGroup();
+        ToggleButton monitor = navButton("Monitor", group);
+        ToggleButton sorter = navButton("Sorter", group);
+        ToggleButton rules = navButton("Rules", group);
+        ToggleButton review = navButton("Review", group);
+        ToggleButton audit = navButton("Audit", group);
+        monitor.setSelected(true);
+        nav.getChildren().addAll(monitor, sorter, rules, review, audit);
+        nav.setUserData(group);
+        return nav;
     }
 
-    private void requestExit(Stage stage, boolean[] allowExit) {
-        allowExit[0] = true;
-        stage.close();
-        Platform.exit();
+    private Node buildMonitorPage() {
+        TableView<DeviceInfo> table = new TableView<>(deviceManager.getDevices());
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
+
+        TableColumn<DeviceInfo, String> serialCol = new TableColumn<>("Serial");
+        serialCol.setCellValueFactory(data -> data.getValue().serialProperty());
+        TableColumn<DeviceInfo, String> stateCol = new TableColumn<>("ADB State");
+        stateCol.setCellValueFactory(data -> data.getValue().adbStateProperty());
+        TableColumn<DeviceInfo, String> modelCol = new TableColumn<>("Model");
+        modelCol.setCellValueFactory(data -> data.getValue().modelProperty());
+        TableColumn<DeviceInfo, String> androidCol = new TableColumn<>("Android");
+        androidCol.setCellValueFactory(data -> data.getValue().androidVersionProperty());
+        TableColumn<DeviceInfo, String> pingCol = new TableColumn<>("Ping");
+        pingCol.setCellValueFactory(data -> data.getValue().pingStatusProperty());
+        TableColumn<DeviceInfo, String> lastSeenCol = new TableColumn<>("Last Seen");
+        lastSeenCol.setCellValueFactory(data -> data.getValue().lastSeenProperty());
+        TableColumn<DeviceInfo, String> workerCol = new TableColumn<>("Worker");
+        workerCol.setCellValueFactory(data -> data.getValue().workerStatusProperty());
+        TableColumn<DeviceInfo, String> portCol = new TableColumn<>("Port");
+        portCol.setCellValueFactory(data -> data.getValue().forwardedPortProperty().asString());
+        TableColumn<DeviceInfo, String> versionCol = new TableColumn<>("Version");
+        versionCol.setCellValueFactory(data -> data.getValue().workerVersionProperty());
+        TableColumn<DeviceInfo, String> queueCol = new TableColumn<>("Queue");
+        queueCol.setCellValueFactory(data -> data.getValue().workerQueueDepthProperty().asString());
+        TableColumn<DeviceInfo, String> uptimeCol = new TableColumn<>("Uptime");
+        uptimeCol.setCellValueFactory(data -> data.getValue().workerUptimeProperty());
+
+        table.getColumns().addAll(serialCol, stateCol, modelCol, androidCol, pingCol, lastSeenCol, workerCol, portCol, versionCol, queueCol, uptimeCol);
+
+        HBox controls = new HBox(8,
+                actionButton("Ping All", e -> deviceManager.pingAll()),
+                actionButton("Restart ADB", e -> deviceManager.restartAdb()),
+                actionButton("Install Worker", e -> installWorkerApk()),
+                actionButton("Start Worker", e -> startWorkers()),
+                actionButton("Stop Worker", e -> stopWorkers()),
+                actionButton("Check Workers", e -> workerMonitor.refreshAll()),
+                actionButton("Forward Ports", e -> forwardPorts())
+        );
+        VBox box = new VBox(10, controls, table);
+        box.getStyleClass().add("page");
+        return box;
     }
 
-    private void updateAdbPathLabel(Label label, Settings settings) {
-        String path = settings.getResolvedAdbPath();
-        String text;
-        String style;
-        if (path == null || path.isBlank() || "adb".equalsIgnoreCase(path.trim())) {
-            boolean adbOnPath = isAdbOnPath();
-            text = adbOnPath ? "ADB: PATH OK" : "ADB: PATH MISSING";
-            style = adbOnPath ? "chip-ok" : "chip-warn";
-        } else if (Files.isExecutable(Path.of(path))) {
-            text = "ADB: OK";
-            style = "chip-ok";
-        } else {
-            text = "ADB: BAD PATH";
-            style = "chip-warn";
-        }
-        label.setText(text);
-        label.getStyleClass().removeAll("chip-ok", "chip-warn", "chip-neutral");
-        label.getStyleClass().add(style);
+    private Node buildSorterPage() {
+        sorterTable = new TableView<>();
+        sorterTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
+
+        sorterTable.getColumns().addAll(
+                textColumn("Status", r -> r.getStatus().name()),
+                textColumn("FileId", FileRecord::shortId),
+                textColumn("Path", FileRecord::getSourcePath),
+                textColumn("Type", r -> r.getFileType().name()),
+                textColumn("Size", r -> formatSize(r.getSizeBytes())),
+                textColumn("Modified", r -> formatTime(r.getModifiedTime())),
+                textColumn("Preview", r -> r.getPreviewStatus().name()),
+                textColumn("Label", FileRecord::getLabel),
+                textColumn("Confidence", r -> formatDouble(r.getConfidence())),
+                textColumn("Faces", r -> String.valueOf(r.getFacesCount())),
+                textColumn("HasText", r -> formatDouble(r.getHasTextLikelihood())),
+                textColumn("Rule", FileRecord::getRuleName),
+                textColumn("Destination", FileRecord::getDestinationPath),
+                textColumn("Move", FileRecord::getMoveStatus)
+        );
+
+        sorterFiltered = new FilteredList<>(fileRecords, r -> true);
+        sorterTable.setItems(sorterFiltered);
+
+        filterBox = new ComboBox<>();
+        filterBox.getItems().addAll("ALL", "NEW", "QUEUED", "INFERRED", "REVIEW", "MOVED", "ERROR");
+        filterBox.getSelectionModel().select("ALL");
+        filterBox.valueProperty().addListener((obs, oldVal, newVal) -> sorterFiltered.setPredicate(r -> filterRecord(r, newVal)));
+
+        sourceField = new TextField();
+        sourceField.setPromptText("Source Root");
+        Button sourceBrowse = actionButton("Browse", e -> chooseSource());
+        destField = new TextField();
+        destField.setPromptText("Destination Root");
+        Button destBrowse = actionButton("Browse", e -> chooseDestination());
+        sourceField.setOnAction(e -> updateSourceFromField());
+        destField.setOnAction(e -> updateDestinationFromField());
+
+        HBox pathRow = new HBox(8, new Label("Source"), sourceField, sourceBrowse,
+                new Label("Destination"), destField, destBrowse);
+        pathRow.setAlignment(Pos.CENTER_LEFT);
+
+        batchField = new TextField();
+        batchField.setPrefWidth(60);
+        inFlightField = new TextField();
+        inFlightField.setPrefWidth(80);
+        Button applyLimits = actionButton("Apply", e -> applyLimits());
+
+        HBox controls = new HBox(8,
+                new Label("Filter"), filterBox,
+                new Label("Batch"), batchField,
+                new Label("Max In-Flight"), inFlightField,
+                applyLimits,
+                actionButton("Scan", e -> scanSource()),
+                actionButton("Start", e -> startProcessing()),
+                actionButton("Stop", e -> stopProcessing()),
+                actionButton("Preview Settings", e -> showPreviewSettings())
+        );
+        controls.setAlignment(Pos.CENTER_LEFT);
+
+        VBox box = new VBox(10, pathRow, controls, sorterTable);
+        box.getStyleClass().add("page");
+
+        sorterTable.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> updateInspector(newVal));
+
+        return box;
     }
 
-    private boolean isAdbOnPath() {
-        try {
-            Process process = new ProcessBuilder("adb", "version").start();
-            boolean finished = process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS);
-            return finished && process.exitValue() == 0;
-        } catch (Exception e) {
-            return false;
-        }
-    }
+    private Node buildRulesPage() {
+        TableView<Rule> table = new TableView<>(ruleRecords);
+        table.setEditable(true);
+        table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
 
-    private void enableDemoData(Settings settings) {
-        try {
-            Path demoPath = ensureDemoFile();
-            settings.setSimulationEnabled(true);
-            settings.setSimulationFile(demoPath.toString());
-            deviceManager.applySettings();
-            deviceManager.rescanNow();
-        } catch (Exception e) {
-            logService.getLogger().warning("Failed to enable demo data: " + e.getMessage());
-        }
-    }
+        TableColumn<Rule, Boolean> enabledCol = new TableColumn<>("Enabled");
+        enabledCol.setCellValueFactory(data -> {
+            javafx.beans.property.SimpleBooleanProperty prop = new javafx.beans.property.SimpleBooleanProperty(data.getValue().isEnabled());
+            prop.addListener((obs, oldVal, newVal) -> {
+                data.getValue().setEnabled(newVal);
+                persistRules();
+            });
+            return prop;
+        });
+        enabledCol.setCellFactory(CheckBoxTableCell.forTableColumn(enabledCol));
+        enabledCol.setEditable(true);
+        enabledCol.setPrefWidth(80);
 
-    private Path ensureDemoFile() throws IOException {
-        Path demoDir = Path.of(System.getProperty("user.home"), ".rigcontrol", "demo");
-        Files.createDirectories(demoDir);
-        Path demoFile = demoDir.resolve("adb_devices_sample.txt");
-        try (InputStream in = getClass().getResourceAsStream("/samples/adb_devices_sample.txt")) {
-            if (in == null) {
-                throw new IOException("Missing demo resource");
+        TableColumn<Rule, String> condCol = new TableColumn<>("Condition");
+        condCol.setCellValueFactory(data -> new ReadOnlyStringWrapper(data.getValue().getCondition()));
+        condCol.setCellFactory(TextFieldTableCell.forTableColumn());
+        condCol.setOnEditCommit(e -> {
+            String value = e.getNewValue();
+            String err = rulesEngine.validateCondition(value);
+            if (err != null) {
+                showAlert("Rule error", err);
+                return;
             }
-            Files.copy(in, demoFile, StandardCopyOption.REPLACE_EXISTING);
+            e.getRowValue().setCondition(value);
+            persistRules();
+        });
+
+        TableColumn<Rule, String> destCol = new TableColumn<>("Destination");
+        destCol.setCellValueFactory(data -> new ReadOnlyStringWrapper(data.getValue().getDestination()));
+        destCol.setCellFactory(TextFieldTableCell.forTableColumn());
+        destCol.setOnEditCommit(e -> {
+            e.getRowValue().setDestination(e.getNewValue());
+            persistRules();
+        });
+
+        TableColumn<Rule, String> notesCol = new TableColumn<>("Notes");
+        notesCol.setCellValueFactory(data -> new ReadOnlyStringWrapper(data.getValue().getNotes()));
+        notesCol.setCellFactory(TextFieldTableCell.forTableColumn());
+        notesCol.setOnEditCommit(e -> {
+            e.getRowValue().setNotes(e.getNewValue());
+            persistRules();
+        });
+
+        table.getColumns().addAll(enabledCol, condCol, destCol, notesCol);
+
+        Button add = actionButton("Add Rule", e -> {
+            Rule rule = new Rule("rule-" + (ruleRecords.size() + 1), true, "label == UNKNOWN", "Review/Unsorted", "new rule");
+            ruleRecords.add(rule);
+            persistRules();
+        });
+        Button remove = actionButton("Remove", e -> {
+            Rule selected = table.getSelectionModel().getSelectedItem();
+            if (selected != null) {
+                ruleRecords.remove(selected);
+                persistRules();
+            }
+        });
+
+        HBox controls = new HBox(8, add, remove);
+        VBox box = new VBox(10, controls, table);
+        box.getStyleClass().add("page");
+        return box;
+    }
+
+    private Node buildReviewPage() {
+        reviewTable = new TableView<>();
+        reviewTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
+        reviewTable.getColumns().addAll(
+                textColumn("Status", r -> r.getStatus().name()),
+                textColumn("FileId", FileRecord::shortId),
+                textColumn("Path", FileRecord::getSourcePath),
+                textColumn("Label", FileRecord::getLabel),
+                textColumn("Confidence", r -> formatDouble(r.getConfidence()))
+        );
+        reviewFiltered = new FilteredList<>(fileRecords, r -> r.getStatus() == FileStatus.REVIEW);
+        reviewTable.setItems(reviewFiltered);
+        reviewTable.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> updateInspector(newVal));
+
+        Button movePeople = actionButton("Family/People", e -> reviewMoveSelected("Private/Family/People"));
+        Button movePhotos = actionButton("Photos/Other", e -> reviewMoveSelected("Private/Photos/Other"));
+        Button moveInvoices = actionButton("Work/Invoices", e -> reviewMoveSelected("Work/Invoices"));
+        Button moveDocs = actionButton("Work/Documents", e -> reviewMoveSelected("Work/Documents"));
+        Button moveScreens = actionButton("Work/Screenshots", e -> reviewMoveSelected("Work/Screenshots"));
+        Button custom = actionButton("Custom...", e -> reviewMoveCustom());
+        Button requeue = actionButton("Re-run", e -> reviewRequeue());
+        Button ignore = actionButton("Ignore", e -> reviewIgnore());
+
+        HBox actions = new HBox(8, movePeople, movePhotos, moveInvoices, moveDocs, moveScreens, custom, requeue, ignore);
+        VBox box = new VBox(10, actions, reviewTable);
+        box.getStyleClass().add("page");
+        return box;
+    }
+
+    private Node buildAuditPage() {
+        auditFiltered = new FilteredList<>(auditRecords, a -> true);
+        auditTable = new TableView<>(auditFiltered);
+        auditTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
+        auditTable.getColumns().addAll(
+                textColumn("Time", a -> formatTime(a.getTimestamp())),
+                textColumn("FileId", AuditRecord::getFileId),
+                textColumn("From", AuditRecord::getFromPath),
+                textColumn("To", AuditRecord::getToPath),
+                textColumn("Rule", AuditRecord::getRuleName),
+                textColumn("Label", AuditRecord::getLabel)
+        );
+        auditSearchField = new TextField();
+        auditSearchField.setPromptText("Search audit...");
+        auditSearchField.textProperty().addListener((obs, oldVal, newVal) -> {
+            String query = newVal == null ? "" : newVal.toLowerCase();
+            auditFiltered.setPredicate(a -> matchesAudit(a, query));
+        });
+        TextField undoCount = new TextField("5");
+        undoCount.setPrefWidth(60);
+        Button undo = actionButton("Undo", e -> {
+            try {
+                int count = Integer.parseInt(undoCount.getText().trim());
+                undoMoves(count);
+            } catch (Exception ex) {
+                showAlert("Undo error", ex.getMessage());
+            }
+        });
+        VBox box = new VBox(10, new HBox(8, auditSearchField, new Label("Undo N"), undoCount, undo), auditTable);
+        box.getStyleClass().add("page");
+        return box;
+    }
+
+    private VBox buildInspector() {
+        VBox inspector = new VBox(8);
+        inspector.getStyleClass().add("inspector");
+        Label title = new Label("Inspector");
+        title.getStyleClass().add("inspector-title");
+
+        inspectorImage = new ImageView();
+        inspectorImage.setFitWidth(240);
+        inspectorImage.setFitHeight(240);
+        inspectorImage.setPreserveRatio(true);
+        inspectorImage.getStyleClass().add("inspector-image");
+
+        inspectorPath = new Label("-");
+        inspectorMeta = new Label("-");
+        inspectorLabel = new Label("-");
+        inspectorDestination = new Label("-");
+        inspectorRule = new Label("-");
+
+        VBox meta = new VBox(4,
+                labelled("Path", inspectorPath),
+                labelled("Meta", inspectorMeta),
+                labelled("Label", inspectorLabel),
+                labelled("Rule", inspectorRule),
+                labelled("Destination", inspectorDestination)
+        );
+
+        inspector.getChildren().addAll(title, inspectorImage, meta);
+        return inspector;
+    }
+
+    private VBox buildBottom() {
+        VBox bottom = new VBox(6);
+        bottom.getStyleClass().add("bottom");
+
+        statusCounts = new Label("No project loaded");
+        queueDepthLabel = new Label("Queue: 0");
+        deviceCountLabel = new Label("Devices: 0");
+        HBox statusRow = new HBox(12, statusCounts, queueDepthLabel, deviceCountLabel);
+        statusRow.setAlignment(Pos.CENTER_LEFT);
+        statusRow.getStyleClass().add("status-row");
+
+        Button toggleLogs = actionButton("Logs", e -> toggleLogs());
+        HBox statusBar = new HBox(12, statusRow, toggleLogs);
+        statusBar.setAlignment(Pos.CENTER_LEFT);
+
+        logView = new ListView<>(logService.getLogLines());
+        logView.setVisible(false);
+        logView.setManaged(false);
+        logView.setPrefHeight(140);
+
+        bottom.getChildren().addAll(statusBar, logView);
+        return bottom;
+    }
+
+    private void registerNavHandlers(Node navNode, Node monitor, Node sorter, Node rules, Node review, Node audit) {
+        ToggleGroup group = (ToggleGroup) navNode.getUserData();
+        group.selectedToggleProperty().addListener((obs, oldVal, newVal) -> {
+            if (newVal == null) {
+                return;
+            }
+            ToggleButton button = (ToggleButton) newVal;
+            String text = button.getText();
+            monitor.setVisible("Monitor".equals(text));
+            sorter.setVisible("Sorter".equals(text));
+            rules.setVisible("Rules".equals(text));
+            review.setVisible("Review".equals(text));
+            audit.setVisible("Audit".equals(text));
+        });
+    }
+
+    private void refreshUI() {
+        if (projectManager.getConfig() != null) {
+            List<FileRecord> updated = projectManager.getRecords().stream()
+                    .sorted(Comparator.comparing(FileRecord::getSourcePath))
+                    .toList();
+            fileRecords.setAll(updated);
+            auditRecords.setAll(projectManager.getAuditRecords());
+            if (reviewFiltered != null) {
+                reviewFiltered.setPredicate(r -> r.getStatus() == FileStatus.REVIEW);
+            }
+            if (sorterFiltered != null && filterBox != null) {
+                sorterFiltered.setPredicate(r -> filterRecord(r, filterBox.getValue()));
+            }
+            statusCounts.setText(buildCounts());
+            queueDepthLabel.setText("Queue: " + dispatcher.getQueueSize());
         }
-        return demoFile;
+        deviceCountLabel.setText("Devices: " + deviceManager.getDevices().size());
+        sorterTable.refresh();
+        if (reviewTable != null) {
+            reviewTable.refresh();
+        }
+        if (auditTable != null) {
+            auditTable.refresh();
+        }
     }
 
-    private void showLegend(Stage owner) {
-        String text = String.join("\n",
-                "device: ADB online and responsive",
-                "offline: ADB sees the device but it is not responsive",
-                "unauthorized: ADB key not approved on device",
-                "disconnected: previously seen, not present in latest scan"
-        );
-        showInfoDialog(owner, "Device State Legend", text);
+    private String buildCounts() {
+        long total = fileRecords.size();
+        long review = fileRecords.stream().filter(r -> r.getStatus() == FileStatus.REVIEW).count();
+        long moved = fileRecords.stream().filter(r -> r.getStatus() == FileStatus.MOVED).count();
+        long errors = fileRecords.stream().filter(r -> r.getStatus() == FileStatus.ERROR).count();
+        return "Files: " + total + " | Review: " + review + " | Moved: " + moved + " | Errors: " + errors;
     }
 
-    private void showReconnectChecklist(Stage owner) {
-        String text = String.join("\n",
-                "1. Verify `adb devices -l` shows expected devices.",
-                "2. For unauthorized: approve USB debugging on the device.",
-                "3. If ADB shows nothing: check ADB path in Settings.",
-                "4. Restart ADB: `adb kill-server` then `adb start-server`.",
-                "5. Reseat USB hub or power cycle the rig if needed."
-        );
-        showInfoDialog(owner, "Reconnect Checklist", text);
-    }
-
-    private void flashAction(Label label, String message) {
-        if (label == null) {
+    private void loadLastProject() {
+        String last = settings.getLastProjectPath();
+        if (last == null || last.isBlank()) {
             return;
         }
-        label.setText("Action: " + message);
-        Object existing = label.getProperties().get("actionTimer");
-        if (existing instanceof PauseTransition) {
-            ((PauseTransition) existing).stop();
+        try {
+            projectManager.loadProject(Path.of(last));
+            loadProjectIntoUI();
+        } catch (Exception ex) {
+            logService.getLogger().warning("Failed to load last project: " + ex.getMessage());
         }
-        PauseTransition pause = new PauseTransition(Duration.seconds(2));
-        pause.setOnFinished(e -> label.setText("Action: -"));
-        label.getProperties().put("actionTimer", pause);
-        pause.play();
     }
 
-    private VBox buildRibbonGroup(String title, Node... nodes) {
+    private void newProject(Stage stage) {
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle("Create RigSort Project Folder");
+        File dir = chooser.showDialog(stage);
+        if (dir == null) {
+            return;
+        }
+        ProjectConfig config = new ProjectConfig();
+        config.setRules(ProjectManager.defaultRules());
+        config.setSourceRoot(pickFolder("Select Source Root"));
+        config.setDestinationRoot(pickFolder("Select Destination Root"));
+        try {
+            projectManager.createProject(dir.toPath(), config);
+            settings.setLastProjectPath(dir.toPath().toString());
+            loadProjectIntoUI();
+        } catch (Exception ex) {
+            showAlert("Project error", ex.getMessage());
+        }
+    }
+
+    private void openProject(Stage stage) {
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle("Open RigSort Project Folder");
+        File dir = chooser.showDialog(stage);
+        if (dir == null) {
+            return;
+        }
+        try {
+            projectManager.loadProject(dir.toPath());
+            settings.setLastProjectPath(dir.toPath().toString());
+            loadProjectIntoUI();
+        } catch (Exception ex) {
+            showAlert("Project error", ex.getMessage());
+        }
+    }
+
+    private void saveProject() {
+        try {
+            if (projectManager.getConfig() != null) {
+                projectManager.saveConfig();
+                showAlert("Saved", "Project saved.");
+            }
+        } catch (Exception ex) {
+            showAlert("Save error", ex.getMessage());
+        }
+    }
+
+    private void loadProjectIntoUI() {
+        ProjectConfig config = projectManager.getConfig();
+        if (config == null) {
+            return;
+        }
+        sourceField.setText(config.getSourceRoot());
+        destField.setText(config.getDestinationRoot());
+        if (batchField != null) {
+            batchField.setText(String.valueOf(config.getBatchSize()));
+        }
+        if (inFlightField != null) {
+            inFlightField.setText(String.valueOf(config.getMaxInFlight()));
+        }
+        fileRecords.setAll(projectManager.getRecords().stream()
+                .sorted(Comparator.comparing(FileRecord::getSourcePath))
+                .toList());
+        ruleRecords.setAll(config.getRules());
+        auditRecords.setAll(projectManager.getAuditRecords());
+        rulesEngine.setRules(config.getRules());
+        dispatcher.refreshQueue();
+    }
+
+    private void scanSource() {
+        if (projectManager.getConfig() == null) {
+            showAlert("No project", "Create or open a project first.");
+            return;
+        }
+        ProjectConfig config = projectManager.getConfig();
+        if (config.getSourceRoot() == null || config.getSourceRoot().isBlank()) {
+            showAlert("Source missing", "Set Source Root.");
+            return;
+        }
+        ioExecutor.submit(() -> {
+            FileScanner scanner = new FileScanner();
+            try {
+                scanner.scan(Path.of(config.getSourceRoot()), config.isStrictHash(), record -> {
+                    try {
+                        FileRecord existing = projectManager.getRecord(record.getFileId());
+                        if (existing != null) {
+                            return;
+                        }
+                        projectManager.upsertRecord(record);
+                    } catch (Exception ex) {
+                        logService.getLogger().warning("Scan persist failed: " + ex.getMessage());
+                    }
+                });
+                Platform.runLater(() -> {
+                    fileRecords.setAll(projectManager.getRecords());
+                    dispatcher.refreshQueue();
+                });
+            } catch (Exception ex) {
+                logService.getLogger().warning("Scan failed: " + ex.getMessage());
+            }
+        });
+    }
+
+    private void startProcessing() {
+        if (projectManager.getConfig() == null) {
+            showAlert("No project", "Create or open a project first.");
+            return;
+        }
+        dispatcher.start();
+        logService.getLogger().info("Processing started");
+    }
+
+    private void stopProcessing() {
+        dispatcher.stop();
+        logService.getLogger().info("Processing stopped");
+    }
+
+    private void validateRules() {
+        for (Rule rule : ruleRecords) {
+            String err = rulesEngine.validateCondition(rule.getCondition());
+            if (err != null) {
+                showAlert("Rule error", "Rule " + rule.getId() + ": " + err);
+                return;
+            }
+        }
+        showAlert("Rules", "All rules look valid.");
+    }
+
+    private void applyLimits() {
+        if (projectManager.getConfig() == null) {
+            return;
+        }
+        try {
+            int batch = Integer.parseInt(batchField.getText().trim());
+            int inFlight = Integer.parseInt(inFlightField.getText().trim());
+            projectManager.getConfig().setBatchSize(Math.max(1, batch));
+            projectManager.getConfig().setMaxInFlight(Math.max(1, inFlight));
+            projectManager.saveConfig();
+        } catch (Exception ex) {
+            showAlert("Limits error", ex.getMessage());
+        }
+    }
+
+    private void forwardPorts() {
+        for (DeviceInfo device : deviceManager.getDevices()) {
+            if (!"device".equalsIgnoreCase(device.getAdbState())) {
+                continue;
+            }
+            workerClient.checkHealth(device);
+        }
+    }
+
+    private void installWorkerApk() {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Select RigSort Worker APK");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("APK", "*.apk"));
+        File apk = chooser.showOpenDialog(primaryStage);
+        if (apk == null) {
+            return;
+        }
+        ioExecutor.submit(() -> {
+            for (DeviceInfo device : deviceManager.getDevices()) {
+                if (!"device".equalsIgnoreCase(device.getAdbState())) {
+                    continue;
+                }
+                ADBService.ExecResult res = adbService.runAdb(List.of(
+                        "-s", device.getSerial(), "install", "-r", apk.getAbsolutePath()
+                ), Duration.ofSeconds(120));
+                if (res.timedOut || res.exitCode != 0) {
+                    logService.getLogger().warning("Install failed on " + device.getSerial() + ": " + res.stderr);
+                } else {
+                    logService.getLogger().info("Worker installed on " + device.getSerial());
+                    startWorkerService(device.getSerial());
+                }
+            }
+        });
+    }
+
+    private void startWorkers() {
+        ioExecutor.submit(() -> {
+            for (DeviceInfo device : deviceManager.getDevices()) {
+                if (!"device".equalsIgnoreCase(device.getAdbState())) {
+                    continue;
+                }
+                startWorkerService(device.getSerial());
+            }
+        });
+    }
+
+    private void stopWorkers() {
+        ioExecutor.submit(() -> {
+            for (DeviceInfo device : deviceManager.getDevices()) {
+                if (!"device".equalsIgnoreCase(device.getAdbState())) {
+                    continue;
+                }
+                adbService.runAdb(List.of("-s", device.getSerial(), "shell", "am", "stopservice",
+                        "-n", "com.rigsort.worker/.WorkerService"), Duration.ofSeconds(10));
+            }
+        });
+    }
+
+    private void startWorkerService(String serial) {
+        ADBService.ExecResult res = adbService.runAdb(List.of("-s", serial, "shell", "am", "start-foreground-service",
+                "-n", "com.rigsort.worker/.WorkerService"), Duration.ofSeconds(10));
+        if (res.exitCode != 0) {
+            adbService.runAdb(List.of("-s", serial, "shell", "am", "startservice",
+                    "-n", "com.rigsort.worker/.WorkerService"), Duration.ofSeconds(10));
+        }
+    }
+
+    private void reloadRules() {
+        if (projectManager.getConfig() == null) {
+            return;
+        }
+        ruleRecords.setAll(projectManager.getConfig().getRules());
+        rulesEngine.setRules(ruleRecords);
+    }
+
+    private void persistRules() {
+        if (projectManager.getConfig() == null) {
+            return;
+        }
+        projectManager.getConfig().setRules(ruleRecords);
+        try {
+            projectManager.saveConfig();
+        } catch (Exception ex) {
+            showAlert("Save error", ex.getMessage());
+        }
+    }
+
+    private void reviewMoveSelected(String destination) {
+        FileRecord record = reviewTable.getSelectionModel().getSelectedItem();
+        if (record == null) {
+            return;
+        }
+        if (projectManager.getConfig() == null) {
+            return;
+        }
+        FileMover.MoveResult result = fileMover.move(record, projectManager.getConfig(), destination);
+        if (result.isOk()) {
+            String originalPath = record.getSourcePath();
+            record.setDestinationPath(result.getDestination());
+            record.setRuleName("Manual");
+            record.setStatus(FileStatus.MOVED);
+            record.setMoveStatus("MOVED");
+            writeAudit(record, result.getDestination(), originalPath);
+            record.setSourcePath(result.getDestination());
+            if (!projectManager.getConfig().getPreviewPolicy().isKeepPreviews() && record.getPreviewPath() != null) {
+                try {
+                    Files.deleteIfExists(Path.of(record.getPreviewPath()));
+                } catch (Exception ignored) {
+                }
+            }
+            try {
+                projectManager.upsertRecord(record);
+            } catch (Exception ex) {
+                logService.getLogger().warning("Review move persist failed: " + ex.getMessage());
+            }
+        } else {
+            record.setStatus(FileStatus.ERROR);
+            record.setError(result.getError());
+        }
+    }
+
+    private void reviewMoveCustom() {
+        FileRecord record = reviewTable.getSelectionModel().getSelectedItem();
+        if (record == null) {
+            return;
+        }
+        TextInputDialog dialog = new TextInputDialog("Review/Custom");
+        dialog.setTitle("Custom Destination");
+        dialog.setHeaderText("Enter a destination relative to Destination Root");
+        dialog.setContentText("Destination:");
+        dialog.showAndWait().ifPresent(dest -> reviewMoveSelected(dest));
+    }
+
+    private void reviewRequeue() {
+        FileRecord record = reviewTable.getSelectionModel().getSelectedItem();
+        if (record == null) {
+            return;
+        }
+        record.setStatus(FileStatus.NEW);
+        try {
+            projectManager.upsertRecord(record);
+        } catch (Exception ex) {
+            logService.getLogger().warning("Requeue failed: " + ex.getMessage());
+        }
+    }
+
+    private void reviewIgnore() {
+        FileRecord record = reviewTable.getSelectionModel().getSelectedItem();
+        if (record == null) {
+            return;
+        }
+        record.setStatus(FileStatus.IGNORED);
+        try {
+            projectManager.upsertRecord(record);
+        } catch (Exception ex) {
+            logService.getLogger().warning("Ignore failed: " + ex.getMessage());
+        }
+    }
+
+    private void showPreviewSettings() {
+        if (projectManager.getConfig() == null) {
+            showAlert("No project", "Create or open a project first.");
+            return;
+        }
+        PreviewPolicy policy = projectManager.getConfig().getPreviewPolicy();
+        ProjectConfig config = projectManager.getConfig();
+
+        TextField maxEdge = new TextField(String.valueOf(policy.getMaxLongEdgePx()));
+        TextField quality = new TextField(String.valueOf(policy.getQuality()));
+        ComboBox<String> format = new ComboBox<>();
+        format.getItems().addAll("WEBP", "JPEG");
+        format.getSelectionModel().select(policy.getFormat().toUpperCase());
+        CheckBox keep = new CheckBox("Keep previews");
+        keep.setSelected(policy.isKeepPreviews());
+        TextField threshold = new TextField(String.valueOf(config.getConfidenceThreshold()));
+
+        GridPane grid = new GridPane();
+        grid.setHgap(8);
+        grid.setVgap(8);
+        grid.addRow(0, new Label("Max Long Edge"), maxEdge);
+        grid.addRow(1, new Label("Quality"), quality);
+        grid.addRow(2, new Label("Format"), format);
+        grid.addRow(3, new Label("Confidence Threshold"), threshold);
+        grid.addRow(4, keep);
+
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.setTitle("Preview Settings");
+        dialog.getDialogPane().setContent(grid);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+
+        dialog.showAndWait().ifPresent(result -> {
+            if (result == ButtonType.OK) {
+                try {
+                    policy.setMaxLongEdgePx(Integer.parseInt(maxEdge.getText().trim()));
+                    policy.setQuality(Integer.parseInt(quality.getText().trim()));
+                    policy.setFormat(format.getSelectionModel().getSelectedItem());
+                    policy.setKeepPreviews(keep.isSelected());
+                    config.setPreviewPolicy(policy);
+                    config.setConfidenceThreshold(Double.parseDouble(threshold.getText().trim()));
+                    projectManager.saveConfig();
+                } catch (Exception ex) {
+                    showAlert("Preview settings error", ex.getMessage());
+                }
+            }
+        });
+    }
+
+    private void undoMoves() {
+        undoMoves(5);
+    }
+
+    private void undoMoves(int count) {
+        List<AuditRecord> audit = projectManager.getAuditRecords();
+        if (audit.isEmpty()) {
+            return;
+        }
+        int fromIndex = Math.max(0, audit.size() - count);
+        List<AuditRecord> subset = audit.subList(fromIndex, audit.size());
+        List<AuditRecord> reversed = new java.util.ArrayList<>(subset);
+        java.util.Collections.reverse(reversed);
+        fileMover.undo(reversed);
+    }
+
+    private void chooseSource() {
+        String path = pickFolder("Select Source Root");
+        if (path == null) {
+            return;
+        }
+        sourceField.setText(path);
+        updateSourceFromField();
+    }
+
+    private void chooseDestination() {
+        String path = pickFolder("Select Destination Root");
+        if (path == null) {
+            return;
+        }
+        destField.setText(path);
+        updateDestinationFromField();
+    }
+
+    private void updateSourceFromField() {
+        if (projectManager.getConfig() == null) {
+            return;
+        }
+        projectManager.getConfig().setSourceRoot(sourceField.getText().trim());
+        try {
+            projectManager.saveConfig();
+        } catch (Exception ex) {
+            showAlert("Save error", ex.getMessage());
+        }
+    }
+
+    private void updateDestinationFromField() {
+        if (projectManager.getConfig() == null) {
+            return;
+        }
+        projectManager.getConfig().setDestinationRoot(destField.getText().trim());
+        try {
+            projectManager.saveConfig();
+        } catch (Exception ex) {
+            showAlert("Save error", ex.getMessage());
+        }
+    }
+
+    private String pickFolder(String title) {
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle(title);
+        File dir = chooser.showDialog(primaryStage);
+        return dir == null ? null : dir.getAbsolutePath();
+    }
+
+    private void updateInspector(FileRecord record) {
+        if (record == null) {
+            inspectorPath.setText("-");
+            inspectorMeta.setText("-");
+            inspectorLabel.setText("-");
+            inspectorRule.setText("-");
+            inspectorDestination.setText("-");
+            inspectorImage.setImage(null);
+            return;
+        }
+        inspectorPath.setText(record.getSourcePath());
+        String exif = record.getExifDateTime() == null ? "" : (" | " + record.getExifDateTime());
+        inspectorMeta.setText(record.getFileType() + " | " + formatSize(record.getSizeBytes()) + exif);
+        String label = Optional.ofNullable(record.getLabel()).orElse("-");
+        inspectorLabel.setText(label + " (" + formatDouble(record.getConfidence()) + ")");
+        inspectorRule.setText(Optional.ofNullable(record.getRuleName()).orElse("-"));
+        inspectorDestination.setText(Optional.ofNullable(record.getDestinationPath()).orElse("-"));
+        if (record.getPreviewPath() != null && Files.exists(Path.of(record.getPreviewPath()))) {
+            inspectorImage.setImage(new Image(Path.of(record.getPreviewPath()).toUri().toString(), 240, 240, true, true));
+        } else {
+            inspectorImage.setImage(null);
+        }
+    }
+
+    private void writeAudit(FileRecord record, String destination, String originalPath) {
+        AuditRecord audit = new AuditRecord();
+        audit.setFileId(record.getFileId());
+        audit.setFromPath(originalPath);
+        audit.setToPath(destination);
+        audit.setTimestamp(System.currentTimeMillis());
+        audit.setRuleId(record.getRuleId());
+        audit.setRuleName(record.getRuleName());
+        audit.setLabel(record.getLabel());
+        audit.setConfidence(record.getConfidence());
+        audit.setStatus("MOVED");
+        try {
+            projectManager.appendAudit(audit);
+            auditRecords.setAll(projectManager.getAuditRecords());
+        } catch (Exception ex) {
+            logService.getLogger().warning("Audit failed: " + ex.getMessage());
+        }
+    }
+
+    private boolean filterRecord(FileRecord record, String filter) {
+        if (filter == null || "ALL".equalsIgnoreCase(filter)) {
+            return true;
+        }
+        return record.getStatus().name().equalsIgnoreCase(filter);
+    }
+
+    private boolean matchesAudit(AuditRecord record, String query) {
+        if (query == null || query.isBlank()) {
+            return true;
+        }
+        String q = query.toLowerCase();
+        return (record.getFileId() != null && record.getFileId().toLowerCase().contains(q))
+                || (record.getFromPath() != null && record.getFromPath().toLowerCase().contains(q))
+                || (record.getToPath() != null && record.getToPath().toLowerCase().contains(q))
+                || (record.getRuleName() != null && record.getRuleName().toLowerCase().contains(q))
+                || (record.getLabel() != null && record.getLabel().toLowerCase().contains(q));
+    }
+
+    private void toggleLogs() {
+        boolean show = !logView.isVisible();
+        logView.setVisible(show);
+        logView.setManaged(show);
+    }
+
+    private VBox ribbonGroup(String title, Button... buttons) {
         VBox group = new VBox(6);
         group.getStyleClass().add("ribbon-group");
+        for (Button b : buttons) {
+            group.getChildren().add(b);
+        }
         Label label = new Label(title);
         label.getStyleClass().add("ribbon-title");
-        VBox items = new VBox(6);
-        for (Node node : nodes) {
-            items.getChildren().add(node);
-        }
-        group.getChildren().addAll(items, label);
+        group.getChildren().add(label);
         return group;
     }
 
-    private Button infoButton(String message) {
-        Button b = new Button("i");
-        b.getStyleClass().add("info-button");
-        b.setFocusTraversable(false);
-        Tooltip tooltip = new Tooltip(message);
-        tooltip.setShowDelay(Duration.millis(250));
-        tooltip.setHideDelay(Duration.millis(0));
-        tooltip.setShowDuration(Duration.seconds(8));
-        Tooltip.install(b, tooltip);
-        return b;
+    private Button actionButton(String text, javafx.event.EventHandler<javafx.event.ActionEvent> handler) {
+        Button button = new Button(text);
+        button.setOnAction(handler);
+        button.getStyleClass().add("ribbon-button");
+        return button;
     }
 
-    private void showInfoDialog(Stage owner, String title, String body) {
-        Alert alert = new Alert(Alert.AlertType.INFORMATION);
-        alert.initOwner(owner);
-        alert.setTitle(title);
-        alert.setHeaderText(null);
-        alert.setContentText(body);
-        alert.showAndWait();
+    private ToggleButton navButton(String text, ToggleGroup group) {
+        ToggleButton button = new ToggleButton(text);
+        button.setToggleGroup(group);
+        button.getStyleClass().add("nav-button");
+        button.setMaxWidth(Double.MAX_VALUE);
+        return button;
     }
 
-    private String buildTelemetryText(DeviceManager manager) {
-        long polls = manager.getTotalPolls();
-        long ok = manager.getPingOk();
-        long fail = manager.getPingFail();
-        long total = ok + fail;
-        String rate = total == 0 ? "-" : String.format(Locale.US, "%.1f%%", (ok * 100.0) / total);
-        String batch = manager.pingBatchDurationProperty().get();
-        String count = manager.pingBatchCountProperty().get();
-        return "Polls: " + polls + " | Ping OK: " + rate + " | Ping batch: " + batch + " (" + count + " devices)";
+    private <T> TableColumn<T, String> textColumn(String title, java.util.function.Function<T, String> mapper) {
+        TableColumn<T, String> column = new TableColumn<>(title);
+        column.setCellValueFactory(data -> new ReadOnlyStringWrapper(mapper.apply(data.getValue())));
+        return column;
     }
 
-    private void copyCsv(Iterable<DeviceInfo> deviceInfos) {
-        String header = "serial,adb_state,model,android,last_seen,ping_status,last_ping";
-        String body = "";
-        try {
-            body = java.util.stream.StreamSupport.stream(deviceInfos.spliterator(), false)
-                    .map(d -> String.join(",",
-                            d.getSerial(),
-                            d.getAdbState(),
-                            safeCsv(d.modelProperty().get()),
-                            safeCsv(d.androidVersionProperty().get()),
-                            safeCsv(d.lastSeenProperty().get()),
-                            safeCsv(d.pingStatusProperty().get()),
-                            safeCsv(d.lastPingProperty().get())
-                    ))
-                    .collect(Collectors.joining("\n"));
-        } catch (Exception ignored) {
-        }
-        ClipboardContent content = new ClipboardContent();
-        content.putString(header + "\n" + body);
-        Clipboard.getSystemClipboard().setContent(content);
+    private HBox labelled(String label, Label value) {
+        Label l = new Label(label + ":");
+        l.getStyleClass().add("inspector-label");
+        value.getStyleClass().add("inspector-value");
+        HBox box = new HBox(6, l, value);
+        box.setAlignment(Pos.TOP_LEFT);
+        return box;
     }
 
-    private String safeCsv(String value) {
-        if (value == null) {
-            return "";
+    private String formatSize(long bytes) {
+        if (bytes <= 0) {
+            return "0 B";
         }
-        String v = value.replace("\"", "\"\"");
-        if (v.contains(",") || v.contains("\"") || v.contains("\n")) {
-            return "\"" + v + "\"";
+        double kb = bytes / 1024.0;
+        if (kb < 1024) {
+            return String.format("%.1f KB", kb);
         }
-        return v;
+        double mb = kb / 1024.0;
+        return String.format("%.1f MB", mb);
     }
 
-    private boolean filterDevice(DeviceInfo device, boolean hideDisconnected, boolean hideEmulators) {
-        if (hideDisconnected && "disconnected".equalsIgnoreCase(device.getAdbState())) {
-            return false;
+    private String formatTime(long epoch) {
+        if (epoch <= 0) {
+            return "-";
         }
-        if (hideEmulators && device.getSerial() != null && device.getSerial().startsWith("emulator-")) {
-            return false;
-        }
-        return true;
+        return DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+                .withZone(ZoneId.systemDefault())
+                .format(Instant.ofEpochMilli(epoch));
     }
 
-    private void importExpected(Stage owner) {
-        FileChooser chooser = new FileChooser();
-        chooser.setTitle("Import Expected Serials (CSV or TXT)");
-        FileChooser.ExtensionFilter filter = new FileChooser.ExtensionFilter("CSV/TXT", "*.csv", "*.txt");
-        chooser.getExtensionFilters().add(filter);
-        java.io.File file = chooser.showOpenDialog(owner);
-        if (file == null) {
-            return;
+    private String formatDouble(double value) {
+        if (Double.isNaN(value)) {
+            return "-";
         }
-        try {
-            Set<String> serials = Files.readAllLines(file.toPath()).stream()
-                    .map(String::trim)
-                    .filter(s -> !s.isEmpty())
-                    .filter(s -> !s.toLowerCase(Locale.ROOT).startsWith("serial"))
-                    .collect(Collectors.toSet());
-            deviceManager.setExpectedSerials(serials);
-        } catch (IOException e) {
-            logService.getLogger().warning("Failed to import expected list: " + e.getMessage());
-        }
+        return new DecimalFormat("0.00").format(value);
     }
 
-    private void exportSnapshot(Stage owner, Iterable<DeviceInfo> deviceInfos) {
-        FileChooser chooser = new FileChooser();
-        chooser.setTitle("Export Snapshot CSV");
-        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV", "*.csv"));
-        chooser.setInitialFileName("rig_snapshot.csv");
-        java.io.File file = chooser.showSaveDialog(owner);
-        if (file == null) {
-            return;
-        }
-        String header = "serial,adb_state,model,android,last_seen,ping_status,last_ping,expected,tag";
-        String body = java.util.stream.StreamSupport.stream(deviceInfos.spliterator(), false)
-                .map(d -> String.join(",",
-                        d.getSerial(),
-                        d.getAdbState(),
-                        safeCsv(d.modelProperty().get()),
-                        safeCsv(d.androidVersionProperty().get()),
-                        safeCsv(d.lastSeenProperty().get()),
-                        safeCsv(d.pingStatusProperty().get()),
-                        safeCsv(d.lastPingProperty().get()),
-                        safeCsv(d.expectedProperty().get()),
-                        safeCsv(d.tagProperty().get())
-                ))
-                .collect(Collectors.joining("\n"));
-        try {
-            Files.writeString(file.toPath(), header + "\n" + body);
-        } catch (IOException e) {
-            logService.getLogger().warning("Failed to export snapshot: " + e.getMessage());
-        }
-    }
-
-    private VBox buildMonteCarloPanel() {
-        VBox root = new VBox(12);
-        root.getStyleClass().add("card");
-        Label title = new Label("Monte Carlo Engine");
-        title.getStyleClass().add("panel-title");
-
-        GridPane scenarioGrid = new GridPane();
-        scenarioGrid.setHgap(10);
-        scenarioGrid.setVgap(10);
-
-        TextField gridWField = new TextField("40");
-        TextField gridHField = new TextField("30");
-        TextField colonyAField = new TextField("80");
-        TextField colonyBField = new TextField("80");
-        TextField spawnAField = new TextField("0.2");
-        TextField spawnBField = new TextField("0.2");
-        TextField resourceField = new TextField("0.35");
-        TextField biasField = new TextField("0.6");
-        TextField detectionField = new TextField("3");
-        TextField lethalityField = new TextField("0.35");
-        TextField maxStepsField = new TextField("250");
-        TextField thresholdField = new TextField("0.7");
-        TextField streakField = new TextField("10");
-        TextField trialsField = new TextField("1000");
-        TextField seedField = new TextField("12345");
-
-        scenarioGrid.addRow(0, new Label("Grid Width"), gridWField);
-        scenarioGrid.addRow(1, new Label("Grid Height"), gridHField);
-        scenarioGrid.addRow(2, new Label("Colony A Size"), colonyAField);
-        scenarioGrid.addRow(3, new Label("Colony B Size"), colonyBField);
-        scenarioGrid.addRow(4, new Label("Spawn Rate A"), spawnAField);
-        scenarioGrid.addRow(5, new Label("Spawn Rate B"), spawnBField);
-        scenarioGrid.addRow(6, new Label("Resource Density"), resourceField);
-        scenarioGrid.addRow(7, new Label("Movement Bias"), biasField);
-        scenarioGrid.addRow(8, new Label("Detection Radius"), detectionField);
-        scenarioGrid.addRow(9, new Label("Lethality Coef"), lethalityField);
-        scenarioGrid.addRow(10, new Label("Max Steps"), maxStepsField);
-        scenarioGrid.addRow(11, new Label("Territory Threshold"), thresholdField);
-        scenarioGrid.addRow(12, new Label("Decision Streak"), streakField);
-        scenarioGrid.addRow(13, new Label("Trials"), trialsField);
-        scenarioGrid.addRow(14, new Label("Seed"), seedField);
-
-        Button runButton = new Button("Run Locally");
-        Button runInfo = infoButton("Run Monte Carlo trials locally using the parameters above.");
-        runButton.getStyleClass().add("primary-button");
-        ProgressIndicator runProgress = new ProgressIndicator();
-        runProgress.setPrefSize(18, 18);
-        runProgress.setVisible(false);
-        Label runStatus = new Label();
-        runStatus.getStyleClass().add("status-bar");
-
-        HBox runRow = new HBox(10, runButton, runInfo, runProgress, runStatus);
-
-        TableView<ResultRow> resultTable = new TableView<>();
-        resultTable.setPrefHeight(200);
-        resultTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
-        TableColumn<ResultRow, String> metricCol = new TableColumn<>("Metric");
-        metricCol.setCellValueFactory(data -> data.getValue().metric);
-        TableColumn<ResultRow, String> valueCol = new TableColumn<>("Value");
-        valueCol.setCellValueFactory(data -> data.getValue().value);
-        resultTable.getColumns().addAll(metricCol, valueCol);
-
-        ResultRow winA = new ResultRow("Win Probability A", "-");
-        ResultRow winB = new ResultRow("Win Probability B", "-");
-        ResultRow winD = new ResultRow("Win Probability Draw", "-");
-        ResultRow ciA = new ResultRow("95% CI (A)", "-");
-        ResultRow meanTime = new ResultRow("Mean Time to Decision", "-");
-        ResultRow stdTime = new ResultRow("Std Dev Time", "-");
-        ResultRow meanCasualty = new ResultRow("Mean Casualty Ratio", "-");
-        ResultRow trialsRun = new ResultRow("Trials Run", "-");
-        ResultRow converged = new ResultRow("Converged", "-");
-        ResultRow stabilized = new ResultRow("Stabilized At Trial", "-");
-
-        resultTable.setItems(FXCollections.observableArrayList(
-                winA, winB, winD, ciA, meanTime, stdTime, meanCasualty, trialsRun, converged, stabilized
-        ));
-
-        runButton.setOnAction(e -> {
-            runButton.setDisable(true);
-            runProgress.setVisible(true);
-            runStatus.setText("Running...");
-
-            ScenarioParameters params;
-            int trials;
-            try {
-                params = new ScenarioParameters(
-                        parseIntField(gridWField, 40),
-                        parseIntField(gridHField, 30),
-                        parseIntField(colonyAField, 80),
-                        parseIntField(colonyBField, 80),
-                        parseDoubleField(spawnAField, 0.2),
-                        parseDoubleField(spawnBField, 0.2),
-                        parseDoubleField(resourceField, 0.35),
-                        parseDoubleField(biasField, 0.6),
-                        parseIntField(detectionField, 3),
-                        parseDoubleField(lethalityField, 0.35),
-                        parseIntField(maxStepsField, 250),
-                        parseLongField(seedField, 12345L),
-                        parseDoubleField(thresholdField, 0.7),
-                        parseIntField(streakField, 10)
-                );
-                trials = parseIntField(trialsField, 1000);
-            } catch (Exception ex) {
-                runStatus.setText("Invalid input: " + ex.getMessage());
-                runProgress.setVisible(false);
-                runButton.setDisable(false);
-                return;
-            }
-
-            CompletableFuture.supplyAsync(() -> monteCarloRunner.runBatch(params, trials), simExecutor)
-                    .whenComplete((summary, err) -> Platform.runLater(() -> {
-                        if (err != null) {
-                            runStatus.setText("Error: " + err.getMessage());
-                        } else {
-                            winA.value.set(format(summary.winProbabilityA));
-                            winB.value.set(format(summary.winProbabilityB));
-                            winD.value.set(format(summary.winProbabilityDraw));
-                            ciA.value.set("[" + format(summary.confidenceLow) + ", " + format(summary.confidenceHigh) + "]");
-                            meanTime.value.set(format(summary.meanTimeToDecision));
-                            stdTime.value.set(format(summary.standardDeviationTime));
-                            meanCasualty.value.set(format(summary.meanCasualtyRatio));
-                            trialsRun.value.set(String.valueOf(summary.trialsRun));
-                            converged.value.set(summary.convergenceMetrics.converged ? "yes" : "no");
-                            stabilized.value.set(String.valueOf(summary.convergenceMetrics.stabilizedAtTrial));
-                            runStatus.setText("Done");
-                        }
-                        runProgress.setVisible(false);
-                        runButton.setDisable(false);
-                    }));
+    private void showAlert(String title, String message) {
+        Platform.runLater(() -> {
+            Alert alert = new Alert(Alert.AlertType.INFORMATION);
+            alert.setTitle(title);
+            alert.setHeaderText(null);
+            alert.setContentText(message);
+            alert.showAndWait();
         });
-
-        TitledPane scenarioPane = new TitledPane("Scenario Parameters", scenarioGrid);
-        scenarioPane.setExpanded(true);
-
-        TitledPane resultsPane = new TitledPane("Results", resultTable);
-        resultsPane.setExpanded(true);
-
-        GridPane datasetGrid = new GridPane();
-        datasetGrid.setHgap(10);
-        datasetGrid.setVgap(10);
-
-        TextField dsColonyAMin = new TextField("60");
-        TextField dsColonyAMax = new TextField("120");
-        TextField dsColonyBMin = new TextField("60");
-        TextField dsColonyBMax = new TextField("120");
-        TextField dsGridWMin = new TextField("30");
-        TextField dsGridWMax = new TextField("60");
-        TextField dsGridHMin = new TextField("20");
-        TextField dsGridHMax = new TextField("40");
-        TextField dsSpawnAMin = new TextField("0.1");
-        TextField dsSpawnAMax = new TextField("0.4");
-        TextField dsSpawnBMin = new TextField("0.1");
-        TextField dsSpawnBMax = new TextField("0.4");
-        TextField dsResourceMin = new TextField("0.2");
-        TextField dsResourceMax = new TextField("0.6");
-        TextField dsBiasMin = new TextField("0.2");
-        TextField dsBiasMax = new TextField("0.8");
-        TextField dsDetectMin = new TextField("1");
-        TextField dsDetectMax = new TextField("5");
-        TextField dsLethMin = new TextField("0.2");
-        TextField dsLethMax = new TextField("0.6");
-        TextField dsStepsMin = new TextField("150");
-        TextField dsStepsMax = new TextField("300");
-        TextField dsThresholdMin = new TextField("0.65");
-        TextField dsThresholdMax = new TextField("0.8");
-        TextField dsStreakMin = new TextField("8");
-        TextField dsStreakMax = new TextField("15");
-        TextField dsScenarios = new TextField("30");
-        TextField dsTrials = new TextField("400");
-        TextField dsSeed = new TextField("9001");
-
-        datasetGrid.addRow(0, new Label("Colony A Min"), dsColonyAMin, new Label("Max"), dsColonyAMax);
-        datasetGrid.addRow(1, new Label("Colony B Min"), dsColonyBMin, new Label("Max"), dsColonyBMax);
-        datasetGrid.addRow(2, new Label("Grid W Min"), dsGridWMin, new Label("Max"), dsGridWMax);
-        datasetGrid.addRow(3, new Label("Grid H Min"), dsGridHMin, new Label("Max"), dsGridHMax);
-        datasetGrid.addRow(4, new Label("Spawn A Min"), dsSpawnAMin, new Label("Max"), dsSpawnAMax);
-        datasetGrid.addRow(5, new Label("Spawn B Min"), dsSpawnBMin, new Label("Max"), dsSpawnBMax);
-        datasetGrid.addRow(6, new Label("Resource Min"), dsResourceMin, new Label("Max"), dsResourceMax);
-        datasetGrid.addRow(7, new Label("Bias Min"), dsBiasMin, new Label("Max"), dsBiasMax);
-        datasetGrid.addRow(8, new Label("Detect Min"), dsDetectMin, new Label("Max"), dsDetectMax);
-        datasetGrid.addRow(9, new Label("Lethality Min"), dsLethMin, new Label("Max"), dsLethMax);
-        datasetGrid.addRow(10, new Label("Steps Min"), dsStepsMin, new Label("Max"), dsStepsMax);
-        datasetGrid.addRow(11, new Label("Threshold Min"), dsThresholdMin, new Label("Max"), dsThresholdMax);
-        datasetGrid.addRow(12, new Label("Streak Min"), dsStreakMin, new Label("Max"), dsStreakMax);
-        datasetGrid.addRow(13, new Label("Scenarios"), dsScenarios);
-        datasetGrid.addRow(14, new Label("Trials/Scenario"), dsTrials);
-        datasetGrid.addRow(15, new Label("Base Seed"), dsSeed);
-
-        Button datasetButton = new Button("Generate Dataset");
-        Button datasetInfo = infoButton("Generate CSV datasets for ML training from random parameter ranges.");
-        datasetButton.getStyleClass().add("primary-button");
-        ProgressIndicator dsProgress = new ProgressIndicator();
-        dsProgress.setPrefSize(18, 18);
-        dsProgress.setVisible(false);
-        Label dsStatus = new Label();
-        dsStatus.getStyleClass().add("status-bar");
-
-        HBox dsRow = new HBox(10, datasetButton, datasetInfo, dsProgress, dsStatus);
-
-        datasetButton.setOnAction(e -> {
-            datasetButton.setDisable(true);
-            dsProgress.setVisible(true);
-            dsStatus.setText("Generating...");
-
-            DatasetConfig config;
-            try {
-                config = new DatasetConfig(
-                        new IntRange(parseIntField(dsColonyAMin, 60), parseIntField(dsColonyAMax, 120)),
-                        new IntRange(parseIntField(dsColonyBMin, 60), parseIntField(dsColonyBMax, 120)),
-                        new IntRange(parseIntField(dsGridWMin, 30), parseIntField(dsGridWMax, 60)),
-                        new IntRange(parseIntField(dsGridHMin, 20), parseIntField(dsGridHMax, 40)),
-                        new DoubleRange(parseDoubleField(dsSpawnAMin, 0.1), parseDoubleField(dsSpawnAMax, 0.4)),
-                        new DoubleRange(parseDoubleField(dsSpawnBMin, 0.1), parseDoubleField(dsSpawnBMax, 0.4)),
-                        new DoubleRange(parseDoubleField(dsResourceMin, 0.2), parseDoubleField(dsResourceMax, 0.6)),
-                        new DoubleRange(parseDoubleField(dsBiasMin, 0.2), parseDoubleField(dsBiasMax, 0.8)),
-                        new IntRange(parseIntField(dsDetectMin, 1), parseIntField(dsDetectMax, 5)),
-                        new DoubleRange(parseDoubleField(dsLethMin, 0.2), parseDoubleField(dsLethMax, 0.6)),
-                        new IntRange(parseIntField(dsStepsMin, 150), parseIntField(dsStepsMax, 300)),
-                        new DoubleRange(parseDoubleField(dsThresholdMin, 0.65), parseDoubleField(dsThresholdMax, 0.8)),
-                        new IntRange(parseIntField(dsStreakMin, 8), parseIntField(dsStreakMax, 15)),
-                        parseIntField(dsScenarios, 30),
-                        parseIntField(dsTrials, 400),
-                        parseLongField(dsSeed, 9001L)
-                );
-            } catch (Exception ex) {
-                dsStatus.setText("Invalid input: " + ex.getMessage());
-                dsProgress.setVisible(false);
-                datasetButton.setDisable(false);
-                return;
-            }
-
-            CompletableFuture.supplyAsync(() -> {
-                try {
-                    DatasetGenerator generator = new DatasetGenerator(monteCarloRunner, logService.getLogger());
-                    return generator.generate(config);
-                } catch (Exception ex) {
-                    throw new RuntimeException(ex);
-                }
-            }, simExecutor).whenComplete((path, err) -> Platform.runLater(() -> {
-                if (err != null) {
-                    dsStatus.setText("Error: " + err.getMessage());
-                } else {
-                    dsStatus.setText("Saved: " + path);
-                }
-                dsProgress.setVisible(false);
-                datasetButton.setDisable(false);
-            }));
-        });
-
-        TitledPane datasetPane = new TitledPane("Dataset Generation", new VBox(10, datasetGrid, dsRow));
-        datasetPane.setExpanded(false);
-
-        root.getChildren().addAll(title, scenarioPane, runRow, resultsPane, datasetPane);
-        return root;
     }
 
-    private Node buildIntelAnalyticsPanel() {
-        VBox root = new VBox(12);
-        root.getStyleClass().add("card");
-
-        Label title = new Label("Intel Analytics (Noise + Urgency)");
-        title.getStyleClass().add("panel-title");
-
-        TextField trialsField = new TextField("10000");
-        TextField seedField = new TextField("4242");
-        TextField horizonField = new TextField("2000");
-
-        Slider urgencySlider = new Slider(0, 1, 0.4);
-        urgencySlider.setShowTickLabels(true);
-        urgencySlider.setShowTickMarks(true);
-        urgencySlider.setMajorTickUnit(0.25);
-        TextField urgencyField = new TextField("0.40");
-        urgencyField.setPrefWidth(70);
-        urgencySlider.valueProperty().addListener((obs, oldVal, newVal) ->
-                urgencyField.setText(String.format(Locale.US, "%.2f", newVal.doubleValue())));
-        urgencyField.textProperty().addListener((obs, oldVal, newVal) -> {
-            try {
-                double value = Double.parseDouble(newVal);
-                urgencySlider.setValue(Math.max(0.0, Math.min(1.0, value)));
-            } catch (Exception ignored) {
-            }
-        });
-
-        TextField baselineBeliefField = new TextField("0.25");
-        TextField decayField = new TextField("0.92");
-        TextField actThresholdField = new TextField("0.75");
-        TextField investigateLowField = new TextField("0.45");
-        TextField investigateHighField = new TextField("0.65");
-        TextField urgencyActShiftField = new TextField("0.12");
-        TextField urgencyInvestigateShiftField = new TextField("0.08");
-        TextField invStepsField = new TextField("4");
-        TextField invSensBoostField = new TextField("0.08");
-        TextField invSpecBoostField = new TextField("0.05");
-        TextField invDropoutField = new TextField("0.6");
-        TextField invDelayField = new TextField("0.7");
-
-        TextField fpCostField = new TextField("6.0");
-        TextField fnCostField = new TextField("10.0");
-        TextField invCostField = new TextField("0.8");
-        TextField actCostField = new TextField("0.2");
-        TextField urgencyPenaltyField = new TextField("1.2");
-
-        TextField noToEmergingField = new TextField("0.02");
-        TextField noToActiveField = new TextField("0.003");
-        TextField emergingToNoField = new TextField("0.12");
-        TextField emergingToActiveField = new TextField("0.18");
-        TextField activeToNoField = new TextField("0.05");
-        TextField activeToEmergingField = new TextField("0.10");
-
-        GridPane generalGrid = new GridPane();
-        generalGrid.setHgap(10);
-        generalGrid.setVgap(10);
-        generalGrid.addRow(0, new Label("Trials"), trialsField, new Label("Base Seed"), seedField);
-        generalGrid.addRow(1, new Label("Time Horizon"), horizonField, new Label("Urgency (U)"),
-                new HBox(6, urgencySlider, urgencyField));
-
-        GridPane policyGrid = new GridPane();
-        policyGrid.setHgap(10);
-        policyGrid.setVgap(10);
-        policyGrid.addRow(0, new Label("Baseline Belief"), baselineBeliefField, new Label("Decay Factor"), decayField);
-        policyGrid.addRow(1, new Label("Act Threshold"), actThresholdField, new Label("Investigate Low"), investigateLowField);
-        policyGrid.addRow(2, new Label("Investigate High"), investigateHighField, new Label("Urgency Act Shift"), urgencyActShiftField);
-        policyGrid.addRow(3, new Label("Urgency Investigate Shift"), urgencyInvestigateShiftField, new Label("Investigation Steps"), invStepsField);
-        policyGrid.addRow(4, new Label("Inv Sens Boost"), invSensBoostField, new Label("Inv Spec Boost"), invSpecBoostField);
-        policyGrid.addRow(5, new Label("Inv Dropout Mult"), invDropoutField, new Label("Inv Delay Mult"), invDelayField);
-
-        GridPane costGrid = new GridPane();
-        costGrid.setHgap(10);
-        costGrid.setVgap(10);
-        costGrid.addRow(0, new Label("False Positive Cost"), fpCostField, new Label("False Negative Cost"), fnCostField);
-        costGrid.addRow(1, new Label("Investigation Cost"), invCostField, new Label("Act Cost"), actCostField);
-        costGrid.addRow(2, new Label("Urgency Penalty"), urgencyPenaltyField);
-
-        GridPane transitionGrid = new GridPane();
-        transitionGrid.setHgap(10);
-        transitionGrid.setVgap(10);
-        transitionGrid.addRow(0, new Label("NO->EMERGING"), noToEmergingField, new Label("NO->ACTIVE"), noToActiveField);
-        transitionGrid.addRow(1, new Label("EMERGING->NO"), emergingToNoField, new Label("EMERGING->ACTIVE"), emergingToActiveField);
-        transitionGrid.addRow(2, new Label("ACTIVE->NO"), activeToNoField, new Label("ACTIVE->EMERGING"), activeToEmergingField);
-
-        TitledPane generalPane = new TitledPane("Batch Inputs", generalGrid);
-        generalPane.setExpanded(true);
-        TitledPane policyPane = new TitledPane("Policy & Investigation", policyGrid);
-        policyPane.setExpanded(false);
-        TitledPane costPane = new TitledPane("Costs", costGrid);
-        costPane.setExpanded(false);
-        TitledPane transitionPane = new TitledPane("Truth Transitions", transitionGrid);
-        transitionPane.setExpanded(false);
-
-        TableView<SourceRow> sourceTable = new TableView<>();
-        sourceTable.setEditable(true);
-        sourceTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
-        var sourceRows = FXCollections.observableArrayList(
-                new SourceRow("Source A", "0.78", "0.92", "0.00", "0.05", "0.70", "1.5", "4"),
-                new SourceRow("Source B", "0.72", "0.88", "0.00", "0.08", "0.60", "2.0", "5"),
-                new SourceRow("Source C", "0.70", "0.90", "0.02", "0.06", "0.55", "1.0", "3")
-        );
-        sourceTable.setItems(sourceRows);
-
-        TableColumn<SourceRow, String> sourceNameCol = new TableColumn<>("Source");
-        sourceNameCol.setCellValueFactory(data -> data.getValue().name);
-        sourceNameCol.setCellFactory(TextFieldTableCell.forTableColumn());
-        TableColumn<SourceRow, String> sensCol = new TableColumn<>("Sensitivity");
-        sensCol.setCellValueFactory(data -> data.getValue().sensitivity);
-        sensCol.setCellFactory(TextFieldTableCell.forTableColumn());
-        TableColumn<SourceRow, String> specCol = new TableColumn<>("Specificity");
-        specCol.setCellValueFactory(data -> data.getValue().specificity);
-        specCol.setCellFactory(TextFieldTableCell.forTableColumn());
-        TableColumn<SourceRow, String> biasCol = new TableColumn<>("Bias");
-        biasCol.setCellValueFactory(data -> data.getValue().bias);
-        biasCol.setCellFactory(TextFieldTableCell.forTableColumn());
-        TableColumn<SourceRow, String> dropoutCol = new TableColumn<>("Dropout");
-        dropoutCol.setCellValueFactory(data -> data.getValue().dropout);
-        dropoutCol.setCellFactory(TextFieldTableCell.forTableColumn());
-        TableColumn<SourceRow, String> weightCol = new TableColumn<>("Weight");
-        weightCol.setCellValueFactory(data -> data.getValue().weight);
-        weightCol.setCellFactory(TextFieldTableCell.forTableColumn());
-        TableColumn<SourceRow, String> delayCol = new TableColumn<>("Delay Mean");
-        delayCol.setCellValueFactory(data -> data.getValue().delayMean);
-        delayCol.setCellFactory(TextFieldTableCell.forTableColumn());
-        TableColumn<SourceRow, String> maxDelayCol = new TableColumn<>("Max Delay");
-        maxDelayCol.setCellValueFactory(data -> data.getValue().maxDelay);
-        maxDelayCol.setCellFactory(TextFieldTableCell.forTableColumn());
-        sourceTable.getColumns().addAll(sourceNameCol, sensCol, specCol, biasCol, dropoutCol, weightCol, delayCol, maxDelayCol);
-
-        Button addSourceButton = new Button("Add Source");
-        Button addSourceInfo = infoButton("Append a new report source with default parameters.");
-        Button removeSourceButton = new Button("Remove Selected");
-        Button removeSourceInfo = infoButton("Remove the selected report source.");
-        addSourceButton.getStyleClass().add("secondary-button");
-        removeSourceButton.getStyleClass().add("secondary-button");
-        addSourceButton.setOnAction(e -> sourceRows.add(new SourceRow("Source " + (sourceRows.size() + 1), "0.70", "0.90", "0.00", "0.05", "0.60", "1.5", "4")));
-        removeSourceButton.setOnAction(e -> {
-            SourceRow selected = sourceTable.getSelectionModel().getSelectedItem();
-            if (selected != null) {
-                sourceRows.remove(selected);
-            }
-        });
-
-        HBox sourceButtons = new HBox(8, addSourceButton, addSourceInfo, removeSourceButton, removeSourceInfo);
-        VBox sourcePaneContent = new VBox(8, sourceTable, sourceButtons);
-        TitledPane sourcesPane = new TitledPane("Report Sources", sourcePaneContent);
-        sourcesPane.setExpanded(true);
-
-        Button runBatchButton = new Button("Run Simulation Batch");
-        Button runBatchInfo = infoButton("Run deterministic Monte Carlo batch for the current config.");
-        Button cancelBatchButton = new Button("Cancel");
-        Button cancelBatchInfo = infoButton("Cancel the current batch run.");
-        runBatchButton.getStyleClass().add("primary-button");
-        cancelBatchButton.getStyleClass().add("secondary-button");
-        cancelBatchButton.setDisable(true);
-
-        ProgressBar batchProgress = new ProgressBar(0);
-        batchProgress.setPrefWidth(200);
-        Label batchStatus = new Label("Idle");
-        batchStatus.getStyleClass().add("status-bar");
-        Label batchThroughput = new Label("");
-        batchThroughput.getStyleClass().add("status-bar");
-
-        HBox batchButtons = new HBox(8, runBatchButton, runBatchInfo, cancelBatchButton, cancelBatchInfo);
-        HBox batchStatusRow = new HBox(8, batchProgress, batchStatus, batchThroughput);
-        VBox batchBox = new VBox(6, batchButtons, batchStatusRow);
-
-        TableView<MetricRow> metricTable = new TableView<>();
-        metricTable.setPrefHeight(220);
-        metricTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
-        TableColumn<MetricRow, String> metricCol = new TableColumn<>("Metric");
-        metricCol.setCellValueFactory(data -> data.getValue().metric);
-        TableColumn<MetricRow, String> valueCol = new TableColumn<>("Value");
-        valueCol.setCellValueFactory(data -> data.getValue().value);
-        metricTable.getColumns().addAll(metricCol, valueCol);
-
-        MetricRow totalCostMean = new MetricRow("Total Cost (mean)", "-");
-        MetricRow totalCostP = new MetricRow("Total Cost (p5/p50/p95)", "-");
-        MetricRow overMean = new MetricRow("Overreaction Rate (mean)", "-");
-        MetricRow overCI = new MetricRow("Overreaction 95% CI", "-");
-        MetricRow missMean = new MetricRow("Missed Threat Rate (mean)", "-");
-        MetricRow missCI = new MetricRow("Missed Threat 95% CI", "-");
-        MetricRow delayMean = new MetricRow("Decision Delay (mean)", "-");
-        MetricRow delayP = new MetricRow("Decision Delay (p5/p50/p95)", "-");
-        MetricRow accuracyMean = new MetricRow("Decision Accuracy (mean)", "-");
-        MetricRow trialsRun = new MetricRow("Trials Run", "-");
-        MetricRow converged = new MetricRow("Converged", "-");
-        MetricRow convergedAt = new MetricRow("Converged At Trial", "-");
-        metricTable.setItems(FXCollections.observableArrayList(totalCostMean, totalCostP, overMean, overCI, missMean, missCI,
-                delayMean, delayP, accuracyMean, trialsRun, converged, convergedAt));
-
-        Button exportSummaryButton = new Button("Export Summary CSV");
-        Button exportSummaryInfo = infoButton("Export the current batch summary metrics as CSV.");
-        exportSummaryButton.getStyleClass().add("secondary-button");
-        HBox exportRow = new HBox(8, exportSummaryButton, exportSummaryInfo);
-
-        TitledPane outputsPane = new TitledPane("Batch Outputs", new VBox(8, metricTable, exportRow));
-        outputsPane.setExpanded(true);
-
-        GridPane sweepGrid = new GridPane();
-        sweepGrid.setHgap(10);
-        sweepGrid.setVgap(10);
-        TextField sweepPointsField = new TextField("8");
-        TextField sweepTrialsField = new TextField("1200");
-        TextField sweepSeedField = new TextField("8100");
-        TextField specStartField = new TextField("0.95");
-        TextField specEndField = new TextField("0.50");
-        TextField sensStartField = new TextField("0.95");
-        TextField sensEndField = new TextField("0.50");
-        sweepGrid.addRow(0, new Label("Points"), sweepPointsField, new Label("Trials/Point"), sweepTrialsField);
-        sweepGrid.addRow(1, new Label("Base Seed"), sweepSeedField, new Label("Spec Start"), specStartField);
-        sweepGrid.addRow(2, new Label("Spec End"), specEndField, new Label("Sens Start"), sensStartField);
-        sweepGrid.addRow(3, new Label("Sens End"), sensEndField);
-
-        Button runSweepButton = new Button("Run Sweep Experiments");
-        Button runSweepInfo = infoButton("Run specificity and sensitivity sweeps for baseline vs urgency.");
-        Button cancelSweepButton = new Button("Cancel");
-        Button cancelSweepInfo = infoButton("Cancel the sweep run.");
-        runSweepButton.getStyleClass().add("primary-button");
-        cancelSweepButton.getStyleClass().add("secondary-button");
-        cancelSweepButton.setDisable(true);
-        ProgressBar sweepProgress = new ProgressBar(0);
-        sweepProgress.setPrefWidth(200);
-        Label sweepStatus = new Label("Idle");
-        sweepStatus.getStyleClass().add("status-bar");
-
-        HBox sweepButtons = new HBox(8, runSweepButton, runSweepInfo, cancelSweepButton, cancelSweepInfo);
-        HBox sweepStatusRow = new HBox(8, sweepProgress, sweepStatus);
-
-        NumberAxis specXAxis = new NumberAxis();
-        specXAxis.setLabel("False Positive Rate (1 - specificity)");
-        NumberAxis specYAxis = new NumberAxis();
-        specYAxis.setLabel("Total Cost");
-        LineChart<Number, Number> specChart = new LineChart<>(specXAxis, specYAxis);
-        specChart.setCreateSymbols(false);
-        specChart.setPrefHeight(240);
-        specChart.setTitle("Cost vs False Positive Rate");
-
-        NumberAxis sensXAxis = new NumberAxis();
-        sensXAxis.setLabel("Missed Detection Rate (1 - sensitivity)");
-        NumberAxis sensYAxis = new NumberAxis();
-        sensYAxis.setLabel("Total Cost");
-        LineChart<Number, Number> sensChart = new LineChart<>(sensXAxis, sensYAxis);
-        sensChart.setCreateSymbols(false);
-        sensChart.setPrefHeight(240);
-        sensChart.setTitle("Cost vs Missed Detection Rate");
-
-        TextArea conclusionArea = new TextArea("No sweep results yet.");
-        conclusionArea.setEditable(false);
-        conclusionArea.setWrapText(true);
-        conclusionArea.setPrefRowCount(4);
-
-        VBox sweepCharts = new VBox(10, specChart, sensChart);
-        TitledPane sweepPane = new TitledPane("Sweep Experiments",
-                new VBox(10, sweepGrid, sweepButtons, sweepStatusRow, sweepCharts, conclusionArea));
-        sweepPane.setExpanded(false);
-
-        GridPane datasetGrid = new GridPane();
-        datasetGrid.setHgap(10);
-        datasetGrid.setVgap(10);
-        TextField dsSensMin = new TextField("0.60");
-        TextField dsSensMax = new TextField("0.95");
-        TextField dsSpecMin = new TextField("0.60");
-        TextField dsSpecMax = new TextField("0.98");
-        TextField dsDropMin = new TextField("0.00");
-        TextField dsDropMax = new TextField("0.20");
-        TextField dsUrgMin = new TextField("0.00");
-        TextField dsUrgMax = new TextField("0.90");
-        TextField dsFpMin = new TextField("2.0");
-        TextField dsFpMax = new TextField("9.0");
-        TextField dsFnMin = new TextField("5.0");
-        TextField dsFnMax = new TextField("14.0");
-        TextField dsActMin = new TextField("0.55");
-        TextField dsActMax = new TextField("0.85");
-        TextField dsScenarios = new TextField("40");
-        TextField dsTrials = new TextField("500");
-        TextField dsSeed = new TextField("6060");
-        datasetGrid.addRow(0, new Label("Sensitivity Min"), dsSensMin, new Label("Max"), dsSensMax);
-        datasetGrid.addRow(1, new Label("Specificity Min"), dsSpecMin, new Label("Max"), dsSpecMax);
-        datasetGrid.addRow(2, new Label("Dropout Min"), dsDropMin, new Label("Max"), dsDropMax);
-        datasetGrid.addRow(3, new Label("Urgency Min"), dsUrgMin, new Label("Max"), dsUrgMax);
-        datasetGrid.addRow(4, new Label("FP Cost Min"), dsFpMin, new Label("Max"), dsFpMax);
-        datasetGrid.addRow(5, new Label("FN Cost Min"), dsFnMin, new Label("Max"), dsFnMax);
-        datasetGrid.addRow(6, new Label("Act Threshold Min"), dsActMin, new Label("Max"), dsActMax);
-        datasetGrid.addRow(7, new Label("Scenarios"), dsScenarios, new Label("Trials/Scenario"), dsTrials);
-        datasetGrid.addRow(8, new Label("Base Seed"), dsSeed);
-
-        Button datasetButton = new Button("Generate Dataset CSV");
-        Button datasetInfo = infoButton("Generate ML-ready CSV datasets for intel simulations.");
-        datasetButton.getStyleClass().add("primary-button");
-        ProgressBar datasetProgress = new ProgressBar(0);
-        datasetProgress.setPrefWidth(180);
-        Label datasetStatus = new Label("Idle");
-        datasetStatus.getStyleClass().add("status-bar");
-
-        HBox datasetRow = new HBox(8, datasetButton, datasetInfo, datasetProgress, datasetStatus);
-        TitledPane datasetPane = new TitledPane("Dataset Generation", new VBox(10, datasetGrid, datasetRow));
-        datasetPane.setExpanded(false);
-
-        GridPane aiGrid = new GridPane();
-        aiGrid.setHgap(10);
-        aiGrid.setVgap(10);
-        TextField aiScenariosField = new TextField("30");
-        TextField aiTrialsField = new TextField("300");
-        TextField aiLambdaField = new TextField("0.5");
-        aiGrid.addRow(0, new Label("Training Scenarios"), aiScenariosField, new Label("Trials/Scenario"), aiTrialsField);
-        aiGrid.addRow(1, new Label("Ridge Lambda"), aiLambdaField);
-
-        Button trainAiButton = new Button("Train Surrogate");
-        Button trainAiInfo = infoButton("Train a lightweight surrogate model on generated Monte Carlo runs.");
-        Button aiEstimateButton = new Button("AI Estimate");
-        Button aiEstimateInfo = infoButton("Run the surrogate model to estimate metrics instantly.");
-        trainAiButton.getStyleClass().add("primary-button");
-        aiEstimateButton.getStyleClass().add("secondary-button");
-
-        ProgressBar aiProgress = new ProgressBar(0);
-        aiProgress.setPrefWidth(180);
-        Label aiStatus = new Label("Idle");
-        aiStatus.getStyleClass().add("status-bar");
-        Label aiMetrics = new Label("No surrogate trained.");
-        aiMetrics.getStyleClass().add("status-bar");
-
-        HBox aiRow = new HBox(8, trainAiButton, trainAiInfo, aiEstimateButton, aiEstimateInfo);
-        VBox aiBox = new VBox(8, aiGrid, aiRow, aiProgress, aiStatus, aiMetrics);
-        TitledPane aiPane = new TitledPane("AI Surrogate (Optional)", aiBox);
-        aiPane.setExpanded(false);
-
-        VBox inputsBox = new VBox(10, generalPane, policyPane, costPane, transitionPane, sourcesPane);
-        root.getChildren().addAll(title, inputsBox, batchBox, outputsPane, sweepPane, datasetPane, aiPane);
-
-        AtomicBoolean batchCancel = new AtomicBoolean(false);
-        AtomicBoolean sweepCancel = new AtomicBoolean(false);
-        AtomicReference<IntelBatchSummary> lastSummaryRef = new AtomicReference<>();
-
-        runBatchButton.setOnAction(e -> {
-            IntelScenarioConfig config;
-            int trials;
-            long baseSeed;
-            try {
-                config = buildIntelConfig(trialsField, seedField, horizonField, urgencyField, baselineBeliefField, decayField,
-                        actThresholdField, investigateLowField, investigateHighField, urgencyActShiftField, urgencyInvestigateShiftField,
-                        invStepsField, invSensBoostField, invSpecBoostField, invDropoutField, invDelayField,
-                        fpCostField, fnCostField, invCostField, actCostField, urgencyPenaltyField,
-                        noToEmergingField, noToActiveField, emergingToNoField, emergingToActiveField, activeToNoField, activeToEmergingField,
-                        sourceRows);
-                trials = requireInt(trialsField, "Trials");
-                baseSeed = requireLong(seedField, "Base Seed");
-            } catch (Exception ex) {
-                batchStatus.setText("Invalid input: " + ex.getMessage());
-                return;
-            }
-
-            batchCancel.set(false);
-            runBatchButton.setDisable(true);
-            cancelBatchButton.setDisable(false);
-            batchProgress.setProgress(0);
-            batchStatus.setText("Running...");
-            batchThroughput.setText("");
-            logService.getLogger().info("Intel batch starting (" + trials + " trials).");
-
-            CompletableFuture.supplyAsync(() -> {
-                IntelBatchSummary summary = intelRunner.runBatch(config, trials, baseSeed,
-                        MonteCarloRunnerIntel.SeedPolicy.SEQUENTIAL,
-                        (completed, total, rate) -> Platform.runLater(() -> {
-                            batchProgress.setProgress(total == 0 ? 0 : (double) completed / total);
-                            batchStatus.setText("Running: " + completed + "/" + total);
-                            batchThroughput.setText(String.format(Locale.US, "%.1f trials/s", rate));
-                        }),
-                        batchCancel::get);
-                try {
-                    experimentWriter.writeBatchArtifacts(config, summary, MonteCarloRunnerIntel.SeedPolicy.SEQUENTIAL.name());
-                } catch (Exception ex) {
-                    logService.getLogger().warning("Intel batch artifacts failed: " + ex.getMessage());
-                }
-                return summary;
-            }, simExecutor).whenComplete((summary, err) -> Platform.runLater(() -> {
-                runBatchButton.setDisable(false);
-                cancelBatchButton.setDisable(true);
-                if (err != null) {
-                    batchStatus.setText("Error: " + err.getMessage());
-                } else {
-                    lastSummaryRef.set(summary);
-                    totalCostMean.value.set(format(summary.getTotalCostStats().mean()));
-                    totalCostP.value.set(format(summary.getTotalCostStats().p5()) + "/" + format(summary.getTotalCostStats().p50()) + "/" + format(summary.getTotalCostStats().p95()));
-                    overMean.value.set(format(summary.getOverreactionStats().mean()));
-                    overCI.value.set("[" + format(summary.getOverreactionCI().lower()) + ", " + format(summary.getOverreactionCI().upper()) + "]");
-                    missMean.value.set(format(summary.getMissedStats().mean()));
-                    missCI.value.set("[" + format(summary.getMissedCI().lower()) + ", " + format(summary.getMissedCI().upper()) + "]");
-                    delayMean.value.set(format(summary.getDecisionDelayStats().mean()));
-                    delayP.value.set(format(summary.getDecisionDelayStats().p5()) + "/" + format(summary.getDecisionDelayStats().p50()) + "/" + format(summary.getDecisionDelayStats().p95()));
-                    accuracyMean.value.set(format(summary.getDecisionAccuracyStats().mean()));
-                    trialsRun.value.set(String.valueOf(summary.getTrials()));
-                    converged.value.set(summary.getConvergenceMetrics().isConverged() ? "yes" : "no");
-                    convergedAt.value.set(String.valueOf(summary.getConvergenceMetrics().getTrialsAtConvergence()));
-                    batchStatus.setText(batchCancel.get() ? "Canceled" : "Done");
-                    logService.getLogger().info("Intel batch finished (trials " + summary.getTrials() + ").");
-                }
-            }));
-        });
-
-        cancelBatchButton.setOnAction(e -> {
-            batchCancel.set(true);
-            batchStatus.setText("Canceling...");
-        });
-
-        exportSummaryButton.setOnAction(e -> {
-            IntelBatchSummary summary = lastSummaryRef.get();
-            if (summary == null) {
-                batchStatus.setText("No batch summary to export.");
-                return;
-            }
-            FileChooser chooser = new FileChooser();
-            chooser.setTitle("Export Batch Summary CSV");
-            chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV", "*.csv"));
-            chooser.setInitialFileName("intel_batch_summary.csv");
-            java.io.File file = chooser.showSaveDialog(primaryStage);
-            if (file == null) {
-                return;
-            }
-            String csv = "metric,value\\n" +
-                    "total_cost_mean," + summary.getTotalCostStats().mean() + "\\n" +
-                    "total_cost_p5," + summary.getTotalCostStats().p5() + "\\n" +
-                    "total_cost_p50," + summary.getTotalCostStats().p50() + "\\n" +
-                    "total_cost_p95," + summary.getTotalCostStats().p95() + "\\n" +
-                    "overreaction_mean," + summary.getOverreactionStats().mean() + "\\n" +
-                    "overreaction_ci_low," + summary.getOverreactionCI().lower() + "\\n" +
-                    "overreaction_ci_high," + summary.getOverreactionCI().upper() + "\\n" +
-                    "missed_mean," + summary.getMissedStats().mean() + "\\n" +
-                    "missed_ci_low," + summary.getMissedCI().lower() + "\\n" +
-                    "missed_ci_high," + summary.getMissedCI().upper() + "\\n" +
-                    "decision_delay_mean," + summary.getDecisionDelayStats().mean() + "\\n" +
-                    "decision_delay_p50," + summary.getDecisionDelayStats().p50() + "\\n" +
-                    "decision_accuracy_mean," + summary.getDecisionAccuracyStats().mean() + "\\n" +
-                    "trials," + summary.getTrials() + "\\n";
-            try {
-                Files.writeString(file.toPath(), csv);
-                batchStatus.setText("Exported: " + file.getName());
-            } catch (Exception ex) {
-                batchStatus.setText("Export failed: " + ex.getMessage());
-            }
-        });
-
-        runSweepButton.setOnAction(e -> {
-            IntelScenarioConfig config;
-            int points;
-            int trialsPerPoint;
-            long baseSeed;
-            double specStart;
-            double specEnd;
-            double sensStart;
-            double sensEnd;
-            try {
-                config = buildIntelConfig(trialsField, seedField, horizonField, urgencyField, baselineBeliefField, decayField,
-                        actThresholdField, investigateLowField, investigateHighField, urgencyActShiftField, urgencyInvestigateShiftField,
-                        invStepsField, invSensBoostField, invSpecBoostField, invDropoutField, invDelayField,
-                        fpCostField, fnCostField, invCostField, actCostField, urgencyPenaltyField,
-                        noToEmergingField, noToActiveField, emergingToNoField, emergingToActiveField, activeToNoField, activeToEmergingField,
-                        sourceRows);
-                points = requireInt(sweepPointsField, "Sweep Points");
-                trialsPerPoint = requireInt(sweepTrialsField, "Trials per point");
-                baseSeed = requireLong(sweepSeedField, "Sweep Seed");
-                specStart = requireProbability(specStartField, "Spec Start");
-                specEnd = requireProbability(specEndField, "Spec End");
-                sensStart = requireProbability(sensStartField, "Sens Start");
-                sensEnd = requireProbability(sensEndField, "Sens End");
-            } catch (Exception ex) {
-                sweepStatus.setText("Invalid input: " + ex.getMessage());
-                return;
-            }
-
-            sweepCancel.set(false);
-            runSweepButton.setDisable(true);
-            cancelSweepButton.setDisable(false);
-            sweepProgress.setProgress(0);
-            sweepStatus.setText("Running sweeps...");
-            conclusionArea.setText("Running sweeps...");
-            specChart.getData().clear();
-            sensChart.getData().clear();
-            logService.getLogger().info("Intel sweep starting (" + points + " points).");
-
-            CompletableFuture.supplyAsync(() -> {
-                AtomicInteger done = new AtomicInteger(0);
-                int totalPoints = points * 4;
-                IntelSweepRunner.SweepProgressListener progressListener = (completed, total) -> Platform.runLater(() -> {
-                    int overall = done.incrementAndGet();
-                    sweepProgress.setProgress((double) overall / totalPoints);
-                    sweepStatus.setText("Sweep progress: " + overall + "/" + totalPoints);
-                });
-
-                IntelScenarioConfig baseline = config.withUrgency(0.0);
-                SweepSeries specBaseline = intelSweepRunner.runSpecificitySweep(baseline, specStart, specEnd, points,
-                        trialsPerPoint, baseSeed, MonteCarloRunnerIntel.SeedPolicy.SEQUENTIAL, null, sweepCancel::get, progressListener);
-                SweepSeries specUrgency = intelSweepRunner.runSpecificitySweep(config, specStart, specEnd, points,
-                        trialsPerPoint, baseSeed + 9999L, MonteCarloRunnerIntel.SeedPolicy.SEQUENTIAL, null, sweepCancel::get, progressListener);
-                SweepSeries sensBaseline = intelSweepRunner.runSensitivitySweep(baseline, sensStart, sensEnd, points,
-                        trialsPerPoint, baseSeed + 19999L, MonteCarloRunnerIntel.SeedPolicy.SEQUENTIAL, null, sweepCancel::get, progressListener);
-                SweepSeries sensUrgency = intelSweepRunner.runSensitivitySweep(config, sensStart, sensEnd, points,
-                        trialsPerPoint, baseSeed + 29999L, MonteCarloRunnerIntel.SeedPolicy.SEQUENTIAL, null, sweepCancel::get, progressListener);
-                try {
-                    experimentWriter.writeSweepArtifacts(config, specBaseline, specUrgency, "specificity");
-                    experimentWriter.writeSweepArtifacts(config, sensBaseline, sensUrgency, "sensitivity");
-                } catch (Exception ex) {
-                    logService.getLogger().warning("Intel sweep artifacts failed: " + ex.getMessage());
-                }
-                return new SweepPayload(specBaseline, specUrgency, sensBaseline, sensUrgency);
-            }, simExecutor).whenComplete((payload, err) -> Platform.runLater(() -> {
-                runSweepButton.setDisable(false);
-                cancelSweepButton.setDisable(true);
-                if (err != null) {
-                    sweepStatus.setText("Error: " + err.getMessage());
-                    conclusionArea.setText("Sweep failed: " + err.getMessage());
-                    return;
-                }
-                updateSweepChart(specChart, payload.specBaseline, payload.specUrgency,
-                        "Baseline (U=0)", "Urgency (U=" + format(requireDouble(urgencyField, "Urgency")) + ")");
-                updateSweepChart(sensChart, payload.sensBaseline, payload.sensUrgency,
-                        "Baseline (U=0)", "Urgency (U=" + format(requireDouble(urgencyField, "Urgency")) + ")");
-                conclusionArea.setText(buildIntelConclusion(payload.specBaseline, payload.specUrgency,
-                        payload.sensBaseline, payload.sensUrgency, requireDouble(urgencyField, "Urgency")));
-                sweepStatus.setText(sweepCancel.get() ? "Canceled" : "Done");
-                logService.getLogger().info("Intel sweep finished.");
-            }));
-        });
-
-        cancelSweepButton.setOnAction(e -> {
-            sweepCancel.set(true);
-            sweepStatus.setText("Canceling...");
-        });
-
-        datasetButton.setOnAction(e -> {
-            IntelScenarioConfig baseConfig;
-            IntelDatasetConfig datasetConfig;
-            try {
-                baseConfig = buildIntelConfig(trialsField, seedField, horizonField, urgencyField, baselineBeliefField, decayField,
-                        actThresholdField, investigateLowField, investigateHighField, urgencyActShiftField, urgencyInvestigateShiftField,
-                        invStepsField, invSensBoostField, invSpecBoostField, invDropoutField, invDelayField,
-                        fpCostField, fnCostField, invCostField, actCostField, urgencyPenaltyField,
-                        noToEmergingField, noToActiveField, emergingToNoField, emergingToActiveField, activeToNoField, activeToEmergingField,
-                        sourceRows);
-                datasetConfig = new IntelDatasetConfig(
-                        requireInt(dsScenarios, "Scenarios"),
-                        requireInt(dsTrials, "Trials/Scenario"),
-                        requireLong(dsSeed, "Dataset Seed"),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireProbability(dsSensMin, "Sens Min"), requireProbability(dsSensMax, "Sens Max")),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireProbability(dsSpecMin, "Spec Min"), requireProbability(dsSpecMax, "Spec Max")),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireProbability(dsDropMin, "Drop Min"), requireProbability(dsDropMax, "Drop Max")),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireProbability(dsUrgMin, "Urgency Min"), requireProbability(dsUrgMax, "Urgency Max")),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireDouble(dsFpMin, "FP Cost Min"), requireDouble(dsFpMax, "FP Cost Max")),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireDouble(dsFnMin, "FN Cost Min"), requireDouble(dsFnMax, "FN Cost Max")),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireProbability(dsActMin, "Act Th Min"), requireProbability(dsActMax, "Act Th Max"))
-                );
-            } catch (Exception ex) {
-                datasetStatus.setText("Invalid input: " + ex.getMessage());
-                return;
-            }
-
-            datasetButton.setDisable(true);
-            datasetProgress.setProgress(-1);
-            datasetStatus.setText("Generating...");
-            logService.getLogger().info("Intel dataset generation starting.");
-
-            CompletableFuture.supplyAsync(() -> {
-                try {
-                    return intelDatasetGenerator.generateDataset(baseConfig, datasetConfig);
-                } catch (Exception ex) {
-                    throw new RuntimeException(ex);
-                }
-            }, simExecutor).whenComplete((path, err) -> Platform.runLater(() -> {
-                datasetButton.setDisable(false);
-                datasetProgress.setProgress(0);
-                if (err != null) {
-                    datasetStatus.setText("Error: " + err.getMessage());
-                } else {
-                    datasetStatus.setText("Saved: " + path);
-                    logService.getLogger().info("Intel dataset saved: " + path);
-                }
-            }));
-        });
-
-        trainAiButton.setOnAction(e -> {
-            IntelScenarioConfig baseConfig;
-            IntelDatasetConfig datasetConfig;
-            int scenarios;
-            int trialsPerScenario;
-            double lambda;
-            try {
-                baseConfig = buildIntelConfig(trialsField, seedField, horizonField, urgencyField, baselineBeliefField, decayField,
-                        actThresholdField, investigateLowField, investigateHighField, urgencyActShiftField, urgencyInvestigateShiftField,
-                        invStepsField, invSensBoostField, invSpecBoostField, invDropoutField, invDelayField,
-                        fpCostField, fnCostField, invCostField, actCostField, urgencyPenaltyField,
-                        noToEmergingField, noToActiveField, emergingToNoField, emergingToActiveField, activeToNoField, activeToEmergingField,
-                        sourceRows);
-                datasetConfig = new IntelDatasetConfig(
-                        requireInt(dsScenarios, "Scenarios"),
-                        requireInt(dsTrials, "Trials/Scenario"),
-                        requireLong(dsSeed, "Dataset Seed"),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireProbability(dsSensMin, "Sens Min"), requireProbability(dsSensMax, "Sens Max")),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireProbability(dsSpecMin, "Spec Min"), requireProbability(dsSpecMax, "Spec Max")),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireProbability(dsDropMin, "Drop Min"), requireProbability(dsDropMax, "Drop Max")),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireProbability(dsUrgMin, "Urgency Min"), requireProbability(dsUrgMax, "Urgency Max")),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireDouble(dsFpMin, "FP Cost Min"), requireDouble(dsFpMax, "FP Cost Max")),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireDouble(dsFnMin, "FN Cost Min"), requireDouble(dsFnMax, "FN Cost Max")),
-                        new com.antlab.systemthinker.intel.sim.DoubleRange(requireProbability(dsActMin, "Act Th Min"), requireProbability(dsActMax, "Act Th Max"))
-                );
-                scenarios = requireInt(aiScenariosField, "Training Scenarios");
-                trialsPerScenario = requireInt(aiTrialsField, "Trials/Scenario");
-                lambda = requireDouble(aiLambdaField, "Lambda");
-            } catch (Exception ex) {
-                aiStatus.setText("Invalid input: " + ex.getMessage());
-                return;
-            }
-
-            trainAiButton.setDisable(true);
-            aiProgress.setProgress(-1);
-            aiStatus.setText("Training...");
-            aiMetrics.setText("Training surrogate...");
-
-            CompletableFuture.supplyAsync(() -> IntelSurrogateTrainer.train(baseConfig, datasetConfig,
-                    scenarios, trialsPerScenario, lambda), simExecutor)
-                    .whenComplete((model, err) -> Platform.runLater(() -> {
-                        trainAiButton.setDisable(false);
-                        aiProgress.setProgress(0);
-                        if (err != null) {
-                            aiStatus.setText("Training error: " + err.getMessage());
-                        } else {
-                            intelSurrogateModel = model;
-                            aiStatus.setText("Surrogate trained");
-                            aiMetrics.setText(String.format(Locale.US, "MAE cost %.3f | over %.3f | missed %.3f | delay %.3f",
-                                    model.getMaeCost(), model.getMaeOverreaction(), model.getMaeMissed(), model.getMaeDelay()));
-                        }
-                    }));
-        });
-
-        aiEstimateButton.setOnAction(e -> {
-            if (intelSurrogateModel == null) {
-                aiStatus.setText("Train surrogate first.");
-                return;
-            }
-            IntelScenarioConfig config;
-            try {
-                config = buildIntelConfig(trialsField, seedField, horizonField, urgencyField, baselineBeliefField, decayField,
-                        actThresholdField, investigateLowField, investigateHighField, urgencyActShiftField, urgencyInvestigateShiftField,
-                        invStepsField, invSensBoostField, invSpecBoostField, invDropoutField, invDelayField,
-                        fpCostField, fnCostField, invCostField, actCostField, urgencyPenaltyField,
-                        noToEmergingField, noToActiveField, emergingToNoField, emergingToActiveField, activeToNoField, activeToEmergingField,
-                        sourceRows);
-            } catch (Exception ex) {
-                aiStatus.setText("Invalid input: " + ex.getMessage());
-                return;
-            }
-            long start = System.nanoTime();
-            double[] features = IntelSurrogateTrainer.extractFeatures(config);
-            double cost = intelSurrogateModel.getCostModel().predict(features);
-            double over = intelSurrogateModel.getOverreactionModel().predict(features);
-            double missed = intelSurrogateModel.getMissedModel().predict(features);
-            double delay = intelSurrogateModel.getDelayModel().predict(features);
-            long durationMs = (System.nanoTime() - start) / 1_000_000L;
-            aiStatus.setText("AI estimate in " + durationMs + " ms");
-            aiMetrics.setText(String.format(Locale.US, "Predicted cost %.3f | over %.3f | missed %.3f | delay %.3f",
-                    cost, over, missed, delay));
-        });
-
-        ScrollPane scroll = new ScrollPane(root);
-        scroll.setFitToWidth(true);
-        scroll.setFitToHeight(true);
-        scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
-        scroll.setStyle("-fx-background: transparent; -fx-background-color: transparent;");
-        return scroll;
-    }
-
-    private VBox buildNeuralPanel() {
-        VBox root = new VBox(12);
-        root.getStyleClass().add("card");
-        Label title = new Label("Neural Inference");
-        title.getStyleClass().add("panel-title");
-
-        GridPane grid = new GridPane();
-        grid.setHgap(10);
-        grid.setVgap(10);
-
-        TextField modelPath = new TextField("/models/rig_model.tflite");
-        TextField version = new TextField("v1.0.0");
-        TextField hash = new TextField("sha256:...");
-        TextField targets = new TextField("all");
-
-        grid.addRow(0, new Label("Model Path"), modelPath);
-        grid.addRow(1, new Label("Version"), version);
-        grid.addRow(2, new Label("Hash"), hash);
-        grid.addRow(3, new Label("Target Devices"), targets);
-
-        HBox buttons = new HBox(10,
-                new Button("Deploy Model"),
-                new Button("Validate"),
-                new Button("Run Inference"),
-                new Button("Rollback")
-        );
-        buttons.getChildren().forEach(n -> n.getStyleClass().add("secondary-button"));
-        buttons.getChildren().get(0).getStyleClass().add("primary-button");
-
-        Label note = new Label("UI scaffold only (not wired to execution yet).");
-        note.getStyleClass().add("status-bar");
-
-        root.getChildren().addAll(title, grid, buttons, note);
-        return root;
-    }
-
-    private int parseIntField(TextField field, int fallback) {
-        try {
-            return Integer.parseInt(field.getText().trim());
-        } catch (Exception e) {
-            return fallback;
-        }
-    }
-
-    private long parseLongField(TextField field, long fallback) {
-        try {
-            return Long.parseLong(field.getText().trim());
-        } catch (Exception e) {
-            return fallback;
-        }
-    }
-
-    private double parseDoubleField(TextField field, double fallback) {
-        try {
-            return Double.parseDouble(field.getText().trim());
-        } catch (Exception e) {
-            return fallback;
-        }
-    }
-
-    private String format(double value) {
-        return String.format(java.util.Locale.US, "%.4f", value);
-    }
-
-    private int requireInt(TextField field, String name) {
-        try {
-            return Integer.parseInt(field.getText().trim());
-        } catch (Exception e) {
-            throw new IllegalArgumentException(name + " is invalid");
-        }
-    }
-
-    private long requireLong(TextField field, String name) {
-        try {
-            return Long.parseLong(field.getText().trim());
-        } catch (Exception e) {
-            throw new IllegalArgumentException(name + " is invalid");
-        }
-    }
-
-    private double requireDouble(TextField field, String name) {
-        try {
-            return Double.parseDouble(field.getText().trim());
-        } catch (Exception e) {
-            throw new IllegalArgumentException(name + " is invalid");
-        }
-    }
-
-    private double requireProbability(TextField field, String name) {
-        double value = requireDouble(field, name);
-        if (value < 0.0 || value > 1.0) {
-            throw new IllegalArgumentException(name + " must be between 0 and 1");
-        }
-        return value;
-    }
-
-    private IntelScenarioConfig buildIntelConfig(TextField trialsField,
-                                                 TextField seedField,
-                                                 TextField horizonField,
-                                                 TextField urgencyField,
-                                                 TextField baselineBeliefField,
-                                                 TextField decayField,
-                                                 TextField actThresholdField,
-                                                 TextField investigateLowField,
-                                                 TextField investigateHighField,
-                                                 TextField urgencyActShiftField,
-                                                 TextField urgencyInvestigateShiftField,
-                                                 TextField invStepsField,
-                                                 TextField invSensBoostField,
-                                                 TextField invSpecBoostField,
-                                                 TextField invDropoutField,
-                                                 TextField invDelayField,
-                                                 TextField fpCostField,
-                                                 TextField fnCostField,
-                                                 TextField invCostField,
-                                                 TextField actCostField,
-                                                 TextField urgencyPenaltyField,
-                                                 TextField noToEmergingField,
-                                                 TextField noToActiveField,
-                                                 TextField emergingToNoField,
-                                                 TextField emergingToActiveField,
-                                                 TextField activeToNoField,
-                                                 TextField activeToEmergingField,
-                                                 List<SourceRow> sourceRows) {
-        int horizon = requireInt(horizonField, "Time Horizon");
-        double urgency = requireProbability(urgencyField, "Urgency");
-
-        double baselineBelief = requireProbability(baselineBeliefField, "Baseline Belief");
-        double decay = requireProbability(decayField, "Decay Factor");
-        double actThreshold = requireProbability(actThresholdField, "Act Threshold");
-        double investigateLow = requireProbability(investigateLowField, "Investigate Low");
-        double investigateHigh = requireProbability(investigateHighField, "Investigate High");
-        if (investigateLow > investigateHigh) {
-            throw new IllegalArgumentException("Investigate Low must be <= Investigate High");
-        }
-
-        double urgencyActShift = requireDouble(urgencyActShiftField, "Urgency Act Shift");
-        double urgencyInvestigateShift = requireDouble(urgencyInvestigateShiftField, "Urgency Investigate Shift");
-        int invSteps = requireInt(invStepsField, "Investigation Steps");
-        double invSensBoost = requireDouble(invSensBoostField, "Inv Sens Boost");
-        double invSpecBoost = requireDouble(invSpecBoostField, "Inv Spec Boost");
-        double invDropout = requireDouble(invDropoutField, "Inv Dropout Mult");
-        double invDelay = requireDouble(invDelayField, "Inv Delay Mult");
-
-        AnalystPolicy policy = new AnalystPolicy(
-                baselineBelief,
-                decay,
-                actThreshold,
-                investigateLow,
-                investigateHigh,
-                urgencyActShift,
-                urgencyInvestigateShift,
-                invSteps,
-                invSensBoost,
-                invSpecBoost,
-                invDropout,
-                invDelay
-        );
-
-        CostWeights costs = new CostWeights(
-                requireDouble(fpCostField, "False Positive Cost"),
-                requireDouble(fnCostField, "False Negative Cost"),
-                requireDouble(invCostField, "Investigation Cost"),
-                requireDouble(actCostField, "Act Cost"),
-                requireDouble(urgencyPenaltyField, "Urgency Penalty")
-        );
-
-        double[][] transitions = buildTransitionMatrix(
-                requireProbability(noToEmergingField, "NO->EMERGING"),
-                requireProbability(noToActiveField, "NO->ACTIVE"),
-                requireProbability(emergingToNoField, "EMERGING->NO"),
-                requireProbability(emergingToActiveField, "EMERGING->ACTIVE"),
-                requireProbability(activeToNoField, "ACTIVE->NO"),
-                requireProbability(activeToEmergingField, "ACTIVE->EMERGING")
-        );
-
-        if (sourceRows.isEmpty()) {
-            throw new IllegalArgumentException("At least one source is required");
-        }
-        List<SourceConfig> sources = new ArrayList<>();
-        for (int i = 0; i < sourceRows.size(); i++) {
-            sources.add(sourceRows.get(i).toConfig(i));
-        }
-
-        return new IntelScenarioConfig(horizon, transitions, sources, policy, costs, urgency);
-    }
-
-    private double[][] buildTransitionMatrix(double noToEmerging,
-                                             double noToActive,
-                                             double emergingToNo,
-                                             double emergingToActive,
-                                             double activeToNo,
-                                             double activeToEmerging) {
-        double[] row0 = normalizeRow(new double[] {1.0 - noToEmerging - noToActive, noToEmerging, noToActive});
-        double[] row1 = normalizeRow(new double[] {emergingToNo, 1.0 - emergingToNo - emergingToActive, emergingToActive});
-        double[] row2 = normalizeRow(new double[] {activeToNo, activeToEmerging, 1.0 - activeToNo - activeToEmerging});
-        return new double[][] {row0, row1, row2};
-    }
-
-    private double[] normalizeRow(double[] row) {
-        for (int i = 0; i < row.length; i++) {
-            if (row[i] < 0.0) {
-                row[i] = 0.0;
-            }
-        }
-        double sum = 0.0;
-        for (double value : row) {
-            sum += value;
-        }
-        if (sum <= 0.0) {
-            return new double[] {1.0, 0.0, 0.0};
-        }
-        for (int i = 0; i < row.length; i++) {
-            row[i] /= sum;
-        }
-        return row;
-    }
-
-    private void updateSweepChart(LineChart<Number, Number> chart,
-                                  SweepSeries baseline,
-                                  SweepSeries urgency,
-                                  String baselineLabel,
-                                  String urgencyLabel) {
-        chart.getData().clear();
-        if (baseline == null || urgency == null) {
-            return;
-        }
-        XYChart.Series<Number, Number> baselineSeries = new XYChart.Series<>();
-        baselineSeries.setName(baselineLabel);
-        for (SweepPoint point : baseline.getPoints()) {
-            baselineSeries.getData().add(new XYChart.Data<>(point.xValue(), point.meanTotalCost()));
-        }
-        XYChart.Series<Number, Number> urgencySeries = new XYChart.Series<>();
-        urgencySeries.setName(urgencyLabel);
-        for (SweepPoint point : urgency.getPoints()) {
-            urgencySeries.getData().add(new XYChart.Data<>(point.xValue(), point.meanTotalCost()));
-        }
-        chart.getData().addAll(baselineSeries, urgencySeries);
-    }
-
-    private String buildIntelConclusion(SweepSeries specBaseline,
-                                        SweepSeries specUrgency,
-                                        SweepSeries sensBaseline,
-                                        SweepSeries sensUrgency,
-                                        double urgency) {
-        if (specBaseline == null || sensBaseline == null || specBaseline.getPoints().isEmpty() || sensBaseline.getPoints().isEmpty()) {
-            return "No sweep data to conclude.";
-        }
-        double specDelta = specBaseline.getPoints().get(specBaseline.getPoints().size() - 1).meanTotalCost()
-                - specBaseline.getPoints().get(0).meanTotalCost();
-        double sensDelta = sensBaseline.getPoints().get(sensBaseline.getPoints().size() - 1).meanTotalCost()
-                - sensBaseline.getPoints().get(0).meanTotalCost();
-        String h1 = specDelta > sensDelta ? "supports" : "does not clearly support";
-
-        double specUrgencyImpact = specUrgency.getPoints().get(specUrgency.getPoints().size() - 1).meanTotalCost()
-                - specBaseline.getPoints().get(specBaseline.getPoints().size() - 1).meanTotalCost();
-        double sensUrgencyImpact = sensUrgency.getPoints().get(sensUrgency.getPoints().size() - 1).meanTotalCost()
-                - sensBaseline.getPoints().get(sensBaseline.getPoints().size() - 1).meanTotalCost();
-        String h2 = specUrgencyImpact > sensUrgencyImpact ? "supports" : "does not clearly support";
-
-        return String.format(Locale.US,
-                "H1: Degrading specificity increased cost by %.3f vs sensitivity by %.3f; this %s H1. " +
-                        "H2: Urgency U=%.2f increased low-specificity cost by %.3f vs low-sensitivity by %.3f; this %s H2.",
-                specDelta, sensDelta, h1, urgency, specUrgencyImpact, sensUrgencyImpact, h2);
-    }
-
-    private static class MetricRow {
-        final SimpleStringProperty metric;
-        final SimpleStringProperty value;
-
-        MetricRow(String metric, String value) {
-            this.metric = new SimpleStringProperty(metric);
-            this.value = new SimpleStringProperty(value);
-        }
-    }
-
-    private static class SourceRow {
-        final SimpleStringProperty name;
-        final SimpleStringProperty sensitivity;
-        final SimpleStringProperty specificity;
-        final SimpleStringProperty bias;
-        final SimpleStringProperty dropout;
-        final SimpleStringProperty weight;
-        final SimpleStringProperty delayMean;
-        final SimpleStringProperty maxDelay;
-
-        SourceRow(String name,
-                  String sensitivity,
-                  String specificity,
-                  String bias,
-                  String dropout,
-                  String weight,
-                  String delayMean,
-                  String maxDelay) {
-            this.name = new SimpleStringProperty(name);
-            this.sensitivity = new SimpleStringProperty(sensitivity);
-            this.specificity = new SimpleStringProperty(specificity);
-            this.bias = new SimpleStringProperty(bias);
-            this.dropout = new SimpleStringProperty(dropout);
-            this.weight = new SimpleStringProperty(weight);
-            this.delayMean = new SimpleStringProperty(delayMean);
-            this.maxDelay = new SimpleStringProperty(maxDelay);
-        }
-
-        SourceConfig toConfig(int id) {
-            double sens = parseDouble(sensitivity.get(), "Sensitivity");
-            double spec = parseDouble(specificity.get(), "Specificity");
-            double biasVal = parseDouble(bias.get(), "Bias");
-            double drop = parseDouble(dropout.get(), "Dropout");
-            double weightVal = parseDouble(weight.get(), "Weight");
-            double delay = parseDouble(delayMean.get(), "Delay Mean");
-            int maxDelayVal = parseInt(maxDelay.get(), "Max Delay");
-            if (sens < 0.0 || sens > 1.0 || spec < 0.0 || spec > 1.0 || drop < 0.0 || drop > 1.0) {
-                throw new IllegalArgumentException("Source values must be within 0..1 where applicable");
-            }
-            return new SourceConfig(id, name.get(), sens, spec, biasVal, drop, weightVal, delay, Math.max(0, maxDelayVal));
-        }
-
-        private double parseDouble(String value, String label) {
-            try {
-                return Double.parseDouble(value.trim());
-            } catch (Exception ex) {
-                throw new IllegalArgumentException(label + " is invalid");
-            }
-        }
-
-        private int parseInt(String value, String label) {
-            try {
-                return Integer.parseInt(value.trim());
-            } catch (Exception ex) {
-                throw new IllegalArgumentException(label + " is invalid");
-            }
-        }
-    }
-
-    private static class SweepPayload {
-        final SweepSeries specBaseline;
-        final SweepSeries specUrgency;
-        final SweepSeries sensBaseline;
-        final SweepSeries sensUrgency;
-
-        SweepPayload(SweepSeries specBaseline, SweepSeries specUrgency, SweepSeries sensBaseline, SweepSeries sensUrgency) {
-            this.specBaseline = specBaseline;
-            this.specUrgency = specUrgency;
-            this.sensBaseline = sensBaseline;
-            this.sensUrgency = sensUrgency;
-        }
-    }
-
-    private static class ResultRow {
-        final SimpleStringProperty metric;
-        final SimpleStringProperty value;
-
-        ResultRow(String metric, String value) {
-            this.metric = new SimpleStringProperty(metric);
-            this.value = new SimpleStringProperty(value);
-        }
+    private void shutdown() {
+        stopProcessing();
+        workerMonitor.stop();
+        deviceManager.shutdown();
+        dispatcher.shutdown();
+        ioExecutor.shutdownNow();
+        logService.shutdown();
+        Platform.exit();
     }
 
     @Override
     public void stop() {
-        if (logService != null) {
-            logService.getLogger().info("App stopping");
-        }
-        if (deviceManager != null) {
-            deviceManager.shutdown();
-        }
-        if (simExecutor != null) {
-            simExecutor.shutdownNow();
-        }
-        if (logService != null) {
-            logService.shutdown();
-        }
-        Platform.exit();
+        shutdown();
     }
 
     public static void main(String[] args) {

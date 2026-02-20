@@ -2,6 +2,8 @@ package com.antlab.rigcontrol;
 
 import javafx.beans.property.SimpleStringProperty;
 import javafx.beans.property.StringProperty;
+import javafx.beans.property.SimpleIntegerProperty;
+import javafx.beans.property.IntegerProperty;
 
 import java.time.Instant;
 import java.time.ZoneId;
@@ -20,6 +22,12 @@ public class DeviceInfo {
     private final StringProperty lastPing = new SimpleStringProperty("");
     private final StringProperty tag = new SimpleStringProperty("");
     private final StringProperty expected = new SimpleStringProperty("no");
+    private final StringProperty workerStatus = new SimpleStringProperty("-");
+    private final StringProperty workerVersion = new SimpleStringProperty("-");
+    private final StringProperty workerError = new SimpleStringProperty("");
+    private final IntegerProperty workerQueueDepth = new SimpleIntegerProperty(0);
+    private final IntegerProperty forwardedPort = new SimpleIntegerProperty(0);
+    private final StringProperty workerUptime = new SimpleStringProperty("-");
 
     public DeviceInfo(String serial) {
         this.serial.set(serial);
@@ -99,5 +107,61 @@ public class DeviceInfo {
 
     public void setExpected(boolean value) {
         expected.set(value ? "yes" : "no");
+    }
+
+    public StringProperty workerStatusProperty() {
+        return workerStatus;
+    }
+
+    public void setWorkerStatus(String value) {
+        workerStatus.set(value == null ? "-" : value);
+    }
+
+    public StringProperty workerVersionProperty() {
+        return workerVersion;
+    }
+
+    public void setWorkerVersion(String value) {
+        workerVersion.set(value == null || value.isBlank() ? "-" : value);
+    }
+
+    public StringProperty workerErrorProperty() {
+        return workerError;
+    }
+
+    public void setWorkerError(String value) {
+        workerError.set(value == null ? "" : value);
+    }
+
+    public IntegerProperty workerQueueDepthProperty() {
+        return workerQueueDepth;
+    }
+
+    public void setWorkerQueueDepth(int value) {
+        workerQueueDepth.set(Math.max(0, value));
+    }
+
+    public StringProperty workerUptimeProperty() {
+        return workerUptime;
+    }
+
+    public void setWorkerUptime(long seconds) {
+        if (seconds <= 0) {
+            workerUptime.set("-");
+        } else {
+            workerUptime.set(seconds + "s");
+        }
+    }
+
+    public IntegerProperty forwardedPortProperty() {
+        return forwardedPort;
+    }
+
+    public int getForwardedPort() {
+        return forwardedPort.get();
+    }
+
+    public void setForwardedPort(int port) {
+        forwardedPort.set(port);
     }
 }
