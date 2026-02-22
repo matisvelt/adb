@@ -46,7 +46,7 @@ A RigSort project is a folder containing:
 - Documents: pdf
 - Text: txt, docx (treated as text)
 
-HEIC/WebP support uses ImageIO plugins (nightmonkeys + luciad). If a platform lacks native decoders, the preview step will fall back to JPEG or mark the preview as unsupported.
+HEIC/WebP support uses ImageIO plugins (`com.github.usefulness:webp-imageio` for WebP; `nightmonkeys` HEIF is runtime-only and requires JDK 21/22). If a platform lacks decoders/encoders, the preview step will fall back to JPEG or mark the preview as unsupported.
 
 ### Preview Policy (Host‑side)
 - Max long edge: default 1536px

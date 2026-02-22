@@ -38,7 +38,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.time.Duration;
 import java.util.logging.Logger;
 
 public class App extends Application {
@@ -57,6 +56,7 @@ public class App extends Application {
     private PreviewGenerator previewGenerator;
     private RulesEngine rulesEngine;
     private FileMover fileMover;
+    private boolean adbEnabled;
 
     private ExecutorService ioExecutor;
 
@@ -156,7 +156,16 @@ public class App extends Application {
         stage.widthProperty().addListener((obs, oldVal, newVal) -> settings.setWindowWidth(newVal.doubleValue()));
         stage.heightProperty().addListener((obs, oldVal, newVal) -> settings.setWindowHeight(newVal.doubleValue()));
 
-        deviceManager.start();
+        adbEnabled = settings.isAdbEnabled();
+        String adbOverride = System.getProperty("rigsort.adb.enabled");
+        if (adbOverride != null) {
+            adbEnabled = Boolean.parseBoolean(adbOverride);
+        }
+        if (adbEnabled) {
+            deviceManager.start();
+        } else {
+            logService.getLogger().info("ADB disabled (UI-only mode)");
+        }
         workerMonitor.start();
 
         Timeline refresh = new Timeline(new KeyFrame(Duration.seconds(1), e -> refreshUI()));
@@ -246,13 +255,13 @@ public class App extends Application {
         table.getColumns().addAll(serialCol, stateCol, modelCol, androidCol, pingCol, lastSeenCol, workerCol, portCol, versionCol, queueCol, uptimeCol);
 
         HBox controls = new HBox(8,
-                actionButton("Ping All", e -> deviceManager.pingAll()),
-                actionButton("Restart ADB", e -> deviceManager.restartAdb()),
-                actionButton("Install Worker", e -> installWorkerApk()),
-                actionButton("Start Worker", e -> startWorkers()),
-                actionButton("Stop Worker", e -> stopWorkers()),
-                actionButton("Check Workers", e -> workerMonitor.refreshAll()),
-                actionButton("Forward Ports", e -> forwardPorts())
+                actionButton("Ping All", e -> withAdb(() -> deviceManager.pingAll())),
+                actionButton("Restart ADB", e -> withAdb(() -> deviceManager.restartAdb())),
+                actionButton("Install Worker", e -> withAdb(this::installWorkerApk)),
+                actionButton("Start Worker", e -> withAdb(this::startWorkers)),
+                actionButton("Stop Worker", e -> withAdb(this::stopWorkers)),
+                actionButton("Check Workers", e -> withAdb(() -> workerMonitor.refreshAll())),
+                actionButton("Forward Ports", e -> withAdb(this::forwardPorts))
         );
         VBox box = new VBox(10, controls, table);
         box.getStyleClass().add("page");
@@ -544,7 +553,11 @@ public class App extends Application {
             statusCounts.setText(buildCounts());
             queueDepthLabel.setText("Queue: " + dispatcher.getQueueSize());
         }
-        deviceCountLabel.setText("Devices: " + deviceManager.getDevices().size());
+        if (adbEnabled) {
+            deviceCountLabel.setText("Devices: " + deviceManager.getDevices().size());
+        } else {
+            deviceCountLabel.setText("ADB: Disabled");
+        }
         sorterTable.refresh();
         if (reviewTable != null) {
             reviewTable.refresh();
@@ -683,6 +696,10 @@ public class App extends Application {
             showAlert("No project", "Create or open a project first.");
             return;
         }
+        if (!adbEnabled) {
+            showAlert("ADB disabled", "Enable ADB to dispatch work to device workers.");
+            return;
+        }
         dispatcher.start();
         logService.getLogger().info("Processing started");
     }
@@ -742,7 +759,7 @@ public class App extends Application {
                 }
                 ADBService.ExecResult res = adbService.runAdb(List.of(
                         "-s", device.getSerial(), "install", "-r", apk.getAbsolutePath()
-                ), Duration.ofSeconds(120));
+                ), java.time.Duration.ofSeconds(120));
                 if (res.timedOut || res.exitCode != 0) {
                     logService.getLogger().warning("Install failed on " + device.getSerial() + ": " + res.stderr);
                 } else {
@@ -771,17 +788,17 @@ public class App extends Application {
                     continue;
                 }
                 adbService.runAdb(List.of("-s", device.getSerial(), "shell", "am", "stopservice",
-                        "-n", "com.rigsort.worker/.WorkerService"), Duration.ofSeconds(10));
+                        "-n", "com.rigsort.worker/.WorkerService"), java.time.Duration.ofSeconds(10));
             }
         });
     }
 
     private void startWorkerService(String serial) {
         ADBService.ExecResult res = adbService.runAdb(List.of("-s", serial, "shell", "am", "start-foreground-service",
-                "-n", "com.rigsort.worker/.WorkerService"), Duration.ofSeconds(10));
+                "-n", "com.rigsort.worker/.WorkerService"), java.time.Duration.ofSeconds(10));
         if (res.exitCode != 0) {
             adbService.runAdb(List.of("-s", serial, "shell", "am", "startservice",
-                    "-n", "com.rigsort.worker/.WorkerService"), Duration.ofSeconds(10));
+                    "-n", "com.rigsort.worker/.WorkerService"), java.time.Duration.ofSeconds(10));
         }
     }
 
@@ -1058,6 +1075,14 @@ public class App extends Application {
         logView.setManaged(show);
     }
 
+    private void withAdb(Runnable action) {
+        if (!adbEnabled) {
+            showAlert("ADB disabled", "Enable ADB in Settings to use device features.");
+            return;
+        }
+        action.run();
+    }
+
     private VBox ribbonGroup(String title, Button... buttons) {
         VBox group = new VBox(6);
         group.getStyleClass().add("ribbon-group");
@@ -1154,6 +1179,11 @@ public class App extends Application {
     }
 
     public static void main(String[] args) {
+        for (String arg : args) {
+            if ("--no-adb".equalsIgnoreCase(arg)) {
+                System.setProperty("rigsort.adb.enabled", "false");
+            }
+        }
         launch(args);
     }
 }

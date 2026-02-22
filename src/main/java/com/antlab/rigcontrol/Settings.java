@@ -20,6 +20,7 @@ public class Settings {
     private static final String KEY_LAST_WIDTH = "windowWidth";
     private static final String KEY_LAST_HEIGHT = "windowHeight";
     private static final String KEY_LAST_PROJECT = "lastProjectPath";
+    private static final String KEY_ADB_ENABLED = "adbEnabled";
 
     private final Preferences prefs = Preferences.userNodeForPackage(Settings.class);
 
@@ -67,6 +68,14 @@ public class Settings {
 
     public void setAdbPath(String path) {
         prefs.put(KEY_ADB_PATH, path == null || path.isBlank() ? "adb" : path.trim());
+    }
+
+    public boolean isAdbEnabled() {
+        return prefs.getBoolean(KEY_ADB_ENABLED, true);
+    }
+
+    public void setAdbEnabled(boolean enabled) {
+        prefs.putBoolean(KEY_ADB_ENABLED, enabled);
     }
 
     public int getPollIntervalSeconds() {

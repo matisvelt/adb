@@ -119,6 +119,9 @@ public class DeviceManager {
     }
 
     public void start() {
+        if (isRunning()) {
+            return;
+        }
         int poolSize = Math.max(4, settings.getPingMaxConcurrency());
         adbPool = Executors.newFixedThreadPool(poolSize, r -> {
             Thread t = new Thread(r, "adb-worker");
@@ -138,7 +141,14 @@ public class DeviceManager {
     }
 
     public void applySettings() {
+        if (!isRunning()) {
+            return;
+        }
         reschedule();
+    }
+
+    public boolean isRunning() {
+        return scheduler != null && !scheduler.isShutdown();
     }
 
     public void rescanNow() {
@@ -452,9 +462,11 @@ public class DeviceManager {
     public void shutdown() {
         if (scheduler != null) {
             scheduler.shutdownNow();
+            scheduler = null;
         }
         if (adbPool != null) {
             adbPool.shutdownNow();
+            adbPool = null;
         }
         adbService.shutdown();
     }

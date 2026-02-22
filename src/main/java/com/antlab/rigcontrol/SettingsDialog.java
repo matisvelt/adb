@@ -14,6 +14,10 @@ public class SettingsDialog {
         dialog.initModality(Modality.APPLICATION_MODAL);
         dialog.setTitle("ADB Settings");
 
+        CheckBox adbEnabled = new CheckBox("Enable ADB");
+        adbEnabled.setSelected(settings.isAdbEnabled());
+        Label restartNote = new Label("Disable/enable requires restart to take effect.");
+
         TextField adbPathField = new TextField(settings.getAdbPath());
         TextField pollField = new TextField(String.valueOf(settings.getPollIntervalSeconds()));
         TextField pingField = new TextField(String.valueOf(settings.getPingIntervalSeconds()));
@@ -42,11 +46,12 @@ public class SettingsDialog {
         Button cancelButton = new Button("Cancel");
         HBox buttons = new HBox(8, saveButton, cancelButton);
 
-        VBox root = new VBox(12, grid, buttons);
+        VBox root = new VBox(12, adbEnabled, restartNote, grid, buttons);
         root.setPadding(new Insets(12));
 
         saveButton.setOnAction(e -> {
             settings.setAdbPath(adbPathField.getText());
+            settings.setAdbEnabled(adbEnabled.isSelected());
             settings.setPollIntervalSeconds(parseInt(pollField.getText(), settings.getPollIntervalSeconds()));
             settings.setPingIntervalSeconds(parseInt(pingField.getText(), settings.getPingIntervalSeconds()));
             settings.setAdbTimeoutSeconds(parseInt(timeoutField.getText(), settings.getAdbTimeoutSeconds()));
@@ -56,7 +61,9 @@ public class SettingsDialog {
             settings.setPingBackoffMaxSeconds(parseInt(backoffMaxField.getText(), settings.getPingBackoffMaxSeconds()));
             settings.setAdbRateLimitPerInterval(parseInt(rateLimitField.getText(), settings.getAdbRateLimitPerInterval()));
             settings.setAdbRateIntervalSeconds(parseInt(rateIntervalField.getText(), settings.getAdbRateIntervalSeconds()));
-            deviceManager.applySettings();
+            if (settings.isAdbEnabled() && deviceManager.isRunning()) {
+                deviceManager.applySettings();
+            }
             dialog.close();
         });
 

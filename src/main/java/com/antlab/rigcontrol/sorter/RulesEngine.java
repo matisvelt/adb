@@ -179,8 +179,8 @@ public class RulesEngine {
             Object r = right.eval(record);
 
             if ("startsWith".equals(op)) {
-                String ls = toString(l);
-                String rs = toString(r);
+                String ls = stringValue(l);
+                String rs = stringValue(r);
                 if (ls == null || rs == null) {
                     return false;
                 }
@@ -208,8 +208,8 @@ public class RulesEngine {
                 }
             }
 
-            String ls = toString(l);
-            String rs = toString(r);
+            String ls = stringValue(l);
+            String rs = stringValue(r);
             if (ls == null || rs == null) {
                 return false;
             }
@@ -250,7 +250,7 @@ public class RulesEngine {
         return null;
     }
 
-    private static String toString(Object value) {
+    private static String stringValue(Object value) {
         if (value == null) {
             return null;
         }

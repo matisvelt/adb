@@ -44,8 +44,8 @@ dependencies {
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.1'
     implementation 'org.apache.pdfbox:pdfbox:2.0.30'
     implementation 'com.drewnoakes:metadata-extractor:2.19.0'
-    implementation 'com.luciad.imageio.webp:luciad-imageio-webp:1.0.0'
-    implementation 'com.github.gotson.nightmonkeys:imageio-heif:1.0.0'
+    implementation 'com.github.usefulness:webp-imageio:0.10.2'
+    runtimeOnly 'com.github.gotson.nightmonkeys:imageio-heif:1.1.0'
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.10.2'
 }
